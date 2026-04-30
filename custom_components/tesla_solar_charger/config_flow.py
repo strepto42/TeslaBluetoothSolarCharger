@@ -315,15 +315,12 @@ class TeslaSolarChargerConfigFlow(ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
         """Get the options flow for this handler."""
-        return TeslaSolarChargerOptionsFlow(config_entry)
+        return TeslaSolarChargerOptionsFlow()
 
 
 class TeslaSolarChargerOptionsFlow(OptionsFlow):
     """Handle options flow for Tesla Solar Charger."""
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     def _validate_power_sensor(self, entity_id: str) -> bool:
         """Validate that a sensor has a valid power unit."""

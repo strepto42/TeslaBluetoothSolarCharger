@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Tesla Solar Charger",
-        "description": "Configure your Tesla Solar Charger integration.",
+        "description": "Configure your Tesla Solar Charger integration to automatically adjust charging based on excess solar power.",
         "data": {
           "name": "Name",
           "production_sensor": "Solar Production Sensor",
@@ -11,33 +11,34 @@
           "consumption_excludes_charging": "Consumption excludes EV charging",
           "amps_number": "Charging Amps Number Entity",
           "charging_switch": "Charging Switch Entity",
-          "charging_state_sensor": "Charging State Sensor (IEC 61851)",
-          "voltage": "Grid Voltage (V)"
+          "charging_state_sensor": "Charging State Sensor",
+          "voltage": "Grid Voltage"
         },
         "data_description": {
-          "production_sensor": "Sensor measuring solar production in W or kW",
-          "consumption_sensors": "One or more sensors measuring home consumption in W or kW",
-          "consumption_excludes_charging": "Enable only if your consumption sensor does NOT include the EV charging circuit. Most installations do not need this.",
-          "amps_number": "The ESPHome BLE proxy's charging amps number entity",
-          "charging_switch": "The ESPHome BLE proxy's charging switch entity",
-          "charging_state_sensor": "The IEC 61851 state sensor from the BLE proxy",
-          "voltage": "Your grid voltage (typically 230V for EU, 120V for US)"
+          "name": "A friendly name for this integration instance. Used for device and entity naming.",
+          "production_sensor": "Select the sensor that measures your solar panel output power. Must report in W (watts) or kW (kilowatts). Typically from your solar inverter integration.",
+          "consumption_sensors": "Select one or more sensors measuring total home power consumption. Must report in W or kW. If you have multiple CT clamps or meters, select all of them.",
+          "consumption_excludes_charging": "Enable ONLY if your consumption sensor circuit does NOT include the EV charger. Leave OFF for most installations where the main meter sees all loads including EV charging.",
+          "amps_number": "Select the number entity from your ESPHome Tesla BLE proxy that controls charging amperage. This is typically named something like 'Charging Amps' or 'Charge Current Limit'.",
+          "charging_switch": "Select the switch entity from your ESPHome Tesla BLE proxy that starts/stops charging. This is typically named 'Charging' or 'Charge Enable'.",
+          "charging_state_sensor": "Select the sensor showing IEC 61851 charging state from your ESPHome BLE proxy. Values like 'Charging', 'Stopped', 'Disconnected'. Used to detect if car is plugged in.",
+          "voltage": "Your local grid voltage. Use 230V for Europe/Australia, 240V for UK, or 120V for North America. Used to calculate watts from amps."
         }
       }
     },
     "error": {
-      "invalid_power_unit": "Sensor must have unit_of_measurement of W or kW",
-      "no_consumption_sensors": "At least one consumption sensor is required"
+      "invalid_power_unit": "Selected sensor must have unit_of_measurement of W or kW. Please select a power sensor.",
+      "no_consumption_sensors": "At least one consumption sensor is required to calculate excess solar power."
     },
     "abort": {
-      "already_configured": "This integration is already configured"
+      "already_configured": "This integration is already configured. Use the Options button to modify settings."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Tesla Solar Charger Options",
-        "description": "Adjust your Tesla Solar Charger settings.",
+        "description": "Adjust charging behavior, timing, and sensor configuration.",
         "data": {
           "name": "Name",
           "production_sensor": "Solar Production Sensor",
@@ -45,24 +46,32 @@
           "consumption_excludes_charging": "Consumption excludes EV charging",
           "amps_number": "Charging Amps Number Entity",
           "charging_switch": "Charging Switch Entity",
-          "charging_state_sensor": "Charging State Sensor (IEC 61851)",
-          "voltage": "Grid Voltage (V)",
-          "update_interval_seconds": "Update Interval (seconds)",
+          "charging_state_sensor": "Charging State Sensor",
+          "voltage": "Grid Voltage",
+          "update_interval_seconds": "Update Interval",
           "min_amps": "Minimum Charging Amps",
           "max_amps": "Maximum Charging Amps",
-          "margin_w": "Margin (W)",
-          "min_solar_generation_w": "Minimum Solar Generation (W)",
-          "stop_delay_seconds": "Stop Delay (seconds)",
-          "restart_delay_seconds": "Restart Delay (seconds)"
+          "margin_w": "Solar Tracking Margin",
+          "min_solar_generation_w": "Minimum Solar Generation",
+          "stop_delay_seconds": "Stop Delay",
+          "restart_delay_seconds": "Restart Cooldown"
         },
         "data_description": {
-          "update_interval_seconds": "How often to update and adjust charging (10-300 seconds)",
-          "min_amps": "Minimum amps to charge at (1-32)",
-          "max_amps": "Maximum amps to charge at (5-32)",
-          "margin_w": "Buffer to add/subtract from excess calculation (-5000 to 5000 W)",
-          "min_solar_generation_w": "Minimum solar generation before starting charge (0-10000 W)",
-          "stop_delay_seconds": "Time to wait before stopping charge (to handle cloud cover)",
-          "restart_delay_seconds": "Cooldown time after stopping before restarting charge"
+          "name": "A friendly name for this integration instance.",
+          "production_sensor": "Sensor measuring solar production in W or kW.",
+          "consumption_sensors": "One or more sensors measuring home consumption in W or kW.",
+          "consumption_excludes_charging": "Enable ONLY if your consumption sensor does NOT include the EV charger circuit.",
+          "amps_number": "The ESPHome BLE proxy's charging amps number entity.",
+          "charging_switch": "The ESPHome BLE proxy's charging switch entity.",
+          "charging_state_sensor": "The IEC 61851 state sensor from the BLE proxy.",
+          "voltage": "Your local grid voltage (230V EU, 240V UK, 120V US). Used for watts/amps conversion.",
+          "update_interval_seconds": "How often to recalculate excess solar and adjust charging (10-300 seconds). Lower = more responsive but more commands sent to car.",
+          "min_amps": "Minimum charging amperage (1-32A). Tesla's minimum is typically 5A. Charging stops if excess drops below this × voltage.",
+          "max_amps": "Maximum charging amperage (1-32A). Limits how fast the car will charge even with abundant solar.",
+          "margin_w": "Buffer watts subtracted from excess before calculating amps (-5000 to 5000W). Positive values leave headroom, negative values allow slight grid import.",
+          "min_solar_generation_w": "Solar production threshold (0-10000W). Below this, Solar+Grid mode stops charging. Prevents charging at night or with minimal solar.",
+          "stop_delay_seconds": "Seconds to wait before stopping charge when excess drops below minimum (0-3600). Default 360s (6 min). Prevents rapid on/off cycling during brief cloud cover.",
+          "restart_delay_seconds": "Cooldown seconds after stopping before charging can restart (0-7200). Default 900s (15 min). Reduces Tesla contactor wear from frequent start/stop cycles."
         }
       }
     }
@@ -132,4 +141,3 @@
     }
   }
 }
-
