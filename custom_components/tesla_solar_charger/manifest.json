@@ -1,0 +1,13 @@
+{
+  "domain": "tesla_solar_charger",
+  "name": "Tesla Solar Charger",
+  "version": "0.1.0",
+  "config_flow": true,
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "codeowners": ["@me"],
+  "documentation": "https://github.com/me/tesla_solar_charger",
+  "issue_tracker": "https://github.com/me/tesla_solar_charger/issues",
+  "requirements": []
+}
+

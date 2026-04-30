@@ -1,0 +1,120 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Tesla Solar Charger",
+        "description": "Configure your Tesla Solar Charger integration.",
+        "data": {
+          "name": "Name",
+          "production_sensor": "Solar Production Sensor",
+          "consumption_sensors": "Home Consumption Sensors",
+          "consumption_excludes_charging": "Consumption excludes EV charging",
+          "amps_number": "Charging Amps Number Entity",
+          "charging_switch": "Charging Switch Entity",
+          "charging_state_sensor": "Charging State Sensor (IEC 61851)",
+          "voltage": "Grid Voltage (V)"
+        },
+        "data_description": {
+          "production_sensor": "Sensor measuring solar production in W or kW",
+          "consumption_sensors": "One or more sensors measuring home consumption in W or kW",
+          "consumption_excludes_charging": "Enable only if your consumption sensor does NOT include the EV charging circuit. Most installations do not need this.",
+          "amps_number": "The ESPHome BLE proxy's charging amps number entity",
+          "charging_switch": "The ESPHome BLE proxy's charging switch entity",
+          "charging_state_sensor": "The IEC 61851 state sensor from the BLE proxy",
+          "voltage": "Your grid voltage (typically 230V for EU, 120V for US)"
+        }
+      }
+    },
+    "error": {
+      "invalid_power_unit": "Sensor must have unit_of_measurement of W or kW",
+      "no_consumption_sensors": "At least one consumption sensor is required"
+    },
+    "abort": {
+      "already_configured": "This integration is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Tesla Solar Charger Options",
+        "description": "Adjust your Tesla Solar Charger settings.",
+        "data": {
+          "name": "Name",
+          "production_sensor": "Solar Production Sensor",
+          "consumption_sensors": "Home Consumption Sensors",
+          "consumption_excludes_charging": "Consumption excludes EV charging",
+          "amps_number": "Charging Amps Number Entity",
+          "charging_switch": "Charging Switch Entity",
+          "charging_state_sensor": "Charging State Sensor (IEC 61851)",
+          "voltage": "Grid Voltage (V)",
+          "update_interval_seconds": "Update Interval (seconds)",
+          "min_amps": "Minimum Charging Amps",
+          "max_amps": "Maximum Charging Amps",
+          "margin_w": "Margin (W)",
+          "min_solar_generation_w": "Minimum Solar Generation (W)",
+          "stop_delay_seconds": "Stop Delay (seconds)",
+          "restart_delay_seconds": "Restart Delay (seconds)"
+        },
+        "data_description": {
+          "update_interval_seconds": "How often to update and adjust charging (10-300 seconds)",
+          "min_amps": "Minimum amps to charge at (1-32)",
+          "max_amps": "Maximum amps to charge at (5-32)",
+          "margin_w": "Buffer to add/subtract from excess calculation (-5000 to 5000 W)",
+          "min_solar_generation_w": "Minimum solar generation before starting charge (0-10000 W)",
+          "stop_delay_seconds": "Time to wait before stopping charge (to handle cloud cover)",
+          "restart_delay_seconds": "Cooldown time after stopping before restarting charge"
+        }
+      }
+    }
+  },
+  "entity": {
+    "select": {
+      "mode": {
+        "name": "Mode",
+        "state": {
+          "off": "Off",
+          "solar_only": "Solar Only",
+          "solar_plus_grid": "Solar + Grid",
+          "charge_now": "Charge Now"
+        }
+      }
+    },
+    "number": {
+      "min_amps": {
+        "name": "Minimum Amps"
+      },
+      "max_amps": {
+        "name": "Maximum Amps"
+      },
+      "margin_w": {
+        "name": "Margin"
+      }
+    },
+    "switch": {
+      "master_enable": {
+        "name": "Master Enable"
+      }
+    },
+    "sensor": {
+      "target_amps": {
+        "name": "Target Amps"
+      },
+      "commanded_amps": {
+        "name": "Commanded Amps"
+      },
+      "excess_solar": {
+        "name": "Excess Solar"
+      },
+      "controller_state": {
+        "name": "Controller State"
+      },
+      "seconds_until_next_transition": {
+        "name": "Seconds Until Next Transition"
+      },
+      "last_command_succeeded": {
+        "name": "Last Command Succeeded"
+      }
+    }
+  }
+}
+
