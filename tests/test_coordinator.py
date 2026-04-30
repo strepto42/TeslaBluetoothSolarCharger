@@ -821,16 +821,16 @@ class TestChargeNowMode:
     ):
         """Test Charge Now charges at max amps."""
         mock_config_entry.options["max_amps"] = 32
-
+        
         def get_state(entity_id: str):
             if entity_id == "sensor.tesla_charging_state":
                 return State(entity_id, "Stopped", {})
             return State(entity_id, "0", {"unit_of_measurement": "W"})
-
+        
         mock_hass.states.get = MagicMock(side_effect=get_state)
-
+        
         data = await coordinator._async_update_data()
-
+        
         assert data["controller_state"] == ControllerState.FORCED.value
         assert data["target_amps"] == 32
 
@@ -848,13 +848,68 @@ class TestChargeNowMode:
             if entity_id == "sensor.home_consumption":
                 return State(entity_id, "5000", {"unit_of_measurement": "W"})
             return None
-
+        
         mock_hass.states.get = MagicMock(side_effect=get_state)
-
+        
         data = await coordinator._async_update_data()
-
+        
         # Should still charge at max despite no solar
         assert data["controller_state"] == ControllerState.FORCED.value
+
+    @pytest.mark.asyncio
+    async def test_works_with_unavailable_sensors(
+        self, coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry
+    ):
+        """Test Charge Now works even when production/consumption sensors unavailable."""
+        mock_config_entry.options["max_amps"] = 32
+        
+        def get_state(entity_id: str):
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Stopped", {})
+            # Sensors are unavailable (e.g., at night, or solar inverter offline)
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, STATE_UNAVAILABLE, {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, STATE_UNAVAILABLE, {"unit_of_measurement": "W"})
+            return None
+        
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        
+        data = await coordinator._async_update_data()
+        
+        # CRITICAL: Charge Now must work regardless of sensor availability
+        assert data["controller_state"] == ControllerState.FORCED.value
+        assert data["target_amps"] == 32
+        # Verify commands were sent
+        mock_hass.services.async_call.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_sends_commands_on_mode_change(
+        self, coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry
+    ):
+        """Test commands are sent when switching to Charge Now."""
+        mock_config_entry.options["max_amps"] = 16
+        
+        def get_state(entity_id: str):
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Stopped", {})
+            return State(entity_id, "1000", {"unit_of_measurement": "W"})
+        
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        
+        # First call - should send amps and switch commands
+        data = await coordinator._async_update_data()
+        
+        assert data["target_amps"] == 16
+        
+        # Verify service calls were made
+        calls = mock_hass.services.async_call.call_args_list
+        # Should have called number.set_value and switch.turn_on
+        assert len(calls) >= 2
 
 
 class TestEdgeCases:

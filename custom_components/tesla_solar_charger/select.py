@@ -1,6 +1,8 @@
 """Select platform for Tesla Solar Charger."""
 from __future__ import annotations
 
+import logging
+
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -11,6 +13,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from . import TeslaSolarChargerConfigEntry
 from .const import DOMAIN, Mode
 from .coordinator import TeslaSolarChargerCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -57,8 +61,10 @@ class TeslaSolarChargerModeSelect(CoordinatorEntity[TeslaSolarChargerCoordinator
 
     async def async_select_option(self, option: str) -> None:
         """Handle option selection."""
+        _LOGGER.info("Mode selection requested: %s", option)
         for mode in Mode:
             if mode.value == option:
                 self.coordinator.mode = mode
+                _LOGGER.info("Mode set to: %s, triggering refresh", mode.value)
                 break
         await self.coordinator.async_request_refresh()

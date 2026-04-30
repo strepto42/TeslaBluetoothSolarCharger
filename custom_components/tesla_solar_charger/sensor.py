@@ -7,7 +7,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfElectricCurrent, UnitOfPower, UnitOfTime
+from homeassistant.const import EntityCategory, UnitOfElectricCurrent, UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -32,6 +32,11 @@ async def async_setup_entry(
         TeslaSolarChargerStateSensor(coordinator, entry),
         TeslaSolarChargerTransitionSensor(coordinator, entry),
         TeslaSolarChargerLastCommandSensor(coordinator, entry),
+        TeslaSolarChargerPluggedInSensor(coordinator, entry),
+        TeslaSolarChargerIsChargingSensor(coordinator, entry),
+        TeslaSolarChargerProductionSensor(coordinator, entry),
+        TeslaSolarChargerConsumptionSensor(coordinator, entry),
+        TeslaSolarChargerDiagnosticsSensor(coordinator, entry),
     ])
 
 
@@ -185,3 +190,156 @@ class TeslaSolarChargerLastCommandSensor(TeslaSolarChargerBaseSensor):
         if succeeded is None:
             return None
         return "on" if succeeded else "off"
+
+
+class TeslaSolarChargerPluggedInSensor(TeslaSolarChargerBaseSensor):
+    """Sensor for plugged in status."""
+
+    _attr_translation_key = "plugged_in"
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, "plugged_in")
+
+    @property
+    def native_value(self) -> str:
+        """Return plugged in status."""
+        plugged_in = self.coordinator.data.get("plugged_in", False)
+        return "yes" if plugged_in else "no"
+
+
+class TeslaSolarChargerIsChargingSensor(TeslaSolarChargerBaseSensor):
+    """Sensor for charging status."""
+
+    _attr_translation_key = "is_charging"
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, "is_charging")
+
+    @property
+    def native_value(self) -> str:
+        """Return charging status."""
+        is_charging = self.coordinator.data.get("is_charging", False)
+        return "yes" if is_charging else "no"
+
+
+class TeslaSolarChargerProductionSensor(TeslaSolarChargerBaseSensor):
+    """Sensor for solar production reading."""
+
+    _attr_translation_key = "production"
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, "production")
+
+    @property
+    def native_value(self) -> float | None:
+        """Return solar production."""
+        return self.coordinator.data.get("production_w")
+
+
+class TeslaSolarChargerConsumptionSensor(TeslaSolarChargerBaseSensor):
+    """Sensor for home consumption reading."""
+
+    _attr_translation_key = "consumption"
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, "consumption")
+
+    @property
+    def native_value(self) -> float | None:
+        """Return home consumption."""
+        return self.coordinator.data.get("consumption_w")
+
+
+class TeslaSolarChargerDiagnosticsSensor(TeslaSolarChargerBaseSensor):
+    """Sensor with full diagnostics as attributes."""
+
+    _attr_translation_key = "diagnostics"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry, "diagnostics")
+        self._entry = entry
+
+    @property
+    def native_value(self) -> str:
+        """Return a summary status."""
+        data = self.coordinator.data or {}
+        mode = data.get("mode", "unknown")
+        state = data.get("controller_state", "unknown")
+        return f"{mode} / {state}"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Return all diagnostic data as attributes."""
+        data = self.coordinator.data or {}
+        entry_data = self._entry.data or {}
+        entry_options = self._entry.options or {}
+
+        return {
+            # Current state
+            "mode": data.get("mode"),
+            "controller_state": data.get("controller_state"),
+            "master_enabled": self.coordinator.master_enabled,
+
+            # Sensor readings
+            "production_w": data.get("production_w"),
+            "consumption_w": data.get("consumption_w"),
+            "excess_w": data.get("excess_w"),
+
+            # Charging state
+            "plugged_in": data.get("plugged_in"),
+            "is_charging": data.get("is_charging"),
+            "target_amps": data.get("target_amps"),
+            "commanded_amps": data.get("commanded_amps"),
+
+            # Timers
+            "seconds_until_next_transition": data.get("seconds_until_next_transition"),
+
+            # Last command
+            "last_command_succeeded": data.get("last_command_succeeded"),
+            "last_command_sent_at": data.get("last_command_sent_at"),
+
+            # Configuration
+            "config_production_sensor": entry_data.get("production_sensor"),
+            "config_consumption_sensors": entry_data.get("consumption_sensors"),
+            "config_amps_number": entry_data.get("amps_number"),
+            "config_charging_switch": entry_data.get("charging_switch"),
+            "config_charging_state_sensor": entry_data.get("charging_state_sensor"),
+            "config_voltage": entry_data.get("voltage"),
+            "config_min_amps": entry_options.get("min_amps"),
+            "config_max_amps": entry_options.get("max_amps"),
+            "config_margin_w": entry_options.get("margin_w"),
+        }
+
+

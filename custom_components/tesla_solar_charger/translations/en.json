@@ -113,6 +113,21 @@
       },
       "last_command_succeeded": {
         "name": "Last Command Succeeded"
+      },
+      "plugged_in": {
+        "name": "Plugged In"
+      },
+      "is_charging": {
+        "name": "Is Charging"
+      },
+      "production": {
+        "name": "Solar Production"
+      },
+      "consumption": {
+        "name": "Home Consumption"
+      },
+      "diagnostics": {
+        "name": "Diagnostics"
       }
     }
   }

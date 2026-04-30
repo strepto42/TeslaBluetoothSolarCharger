@@ -345,6 +345,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Updates commanded_amps on success, logs on failure.
         """
         if self._commanded_amps == amps:
+            _LOGGER.debug("Amps unchanged at %d, skipping command", amps)
             return
         
         amps_entity = self.entry.data.get("amps_number")
@@ -352,6 +353,11 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.error("No amps_number entity configured")
             return
         
+        _LOGGER.info(
+            "Setting charging amps: %d -> %d (entity: %s)",
+            self._commanded_amps or 0, amps, amps_entity
+        )
+
         try:
             await self.hass.services.async_call(
                 "number",
@@ -362,9 +368,9 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._commanded_amps = amps
             self._last_command_sent_at = time.monotonic()
             self._last_command_succeeded = True
-            _LOGGER.debug("Set charging amps to %d", amps)
+            _LOGGER.info("Successfully set charging amps to %d", amps)
         except Exception as err:
-            _LOGGER.warning("Failed to set charging amps: %s", err)
+            _LOGGER.error("Failed to set charging amps to %d: %s", amps, err)
             self._last_command_succeeded = False
 
     async def _send_switch(self, on: bool) -> None:
@@ -373,6 +379,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Only sends if state differs from last known state.
         """
         if self._is_charging == on:
+            _LOGGER.debug("Switch already %s, skipping command", "on" if on else "off")
             return
         
         switch_entity = self.entry.data.get("charging_switch")
@@ -381,7 +388,11 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         
         service = "turn_on" if on else "turn_off"
-        
+        _LOGGER.info(
+            "Turning charging %s (entity: %s)",
+            "ON" if on else "OFF", switch_entity
+        )
+
         try:
             await self.hass.services.async_call(
                 "switch",
@@ -394,7 +405,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._last_command_succeeded = True
             _LOGGER.info("Charging %s", "started" if on else "stopped")
         except Exception as err:
-            _LOGGER.warning("Failed to %s charging: %s", service, err)
+            _LOGGER.error("Failed to %s charging: %s", service, err)
             self._last_command_succeeded = False
 
     def _compute_seconds_until_transition(self) -> int:
@@ -423,6 +434,11 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data and execute control loop."""
+        _LOGGER.debug(
+            "Update cycle starting - Mode: %s, State: %s, Master: %s",
+            self._mode.value, self._controller_state.value, self._master_enabled
+        )
+
         # Read sensors
         production_entity = self.entry.data.get("production_sensor")
         production_w = self._read_power_w(production_entity)
@@ -446,27 +462,20 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Compute excess
         excess_w = self._compute_excess_w()
         
-        # Handle unavailable sensors
-        if production_w is None or consumption_w is None:
+        # Log sensor unavailability (but don't block execution)
+        sensors_available = production_w is not None and consumption_w is not None
+        if not sensors_available:
             if not self._sensor_unavailable_logged:
                 _LOGGER.warning(
-                    "Sensor unavailable - holding current state. "
-                    "Production: %s, Consumption: %s",
+                    "Sensor unavailable - Production: %s, Consumption: %s. "
+                    "Solar tracking disabled, but Charge Now and Off modes still work.",
                     production_w, consumption_w
                 )
                 self._sensor_unavailable_logged = True
-            # Don't change state or commands when sensors unavailable
-            return self._build_data_dict(
-                production_w=production_w,
-                consumption_w=consumption_w,
-                excess_w=excess_w,
-                plugged_in=plugged_in,
-                target_amps=None,
-            )
         else:
             self._sensor_unavailable_logged = False
         
-        # Update state machine
+        # ALWAYS update state machine - Charge Now and Off modes don't need sensors
         self._update_state_machine(plugged_in, excess_w)
         
         # Compute target amps based on state
@@ -475,9 +484,11 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         max_amps = int(self._get_config_value("max_amps", DEFAULT_MAX_AMPS))
         
         if self._controller_state == ControllerState.FORCED:
+            # Charge Now - always charge at max, regardless of sensors
             target_amps = max_amps
+            _LOGGER.debug("FORCED mode: target_amps=%d", target_amps)
         elif self._controller_state == ControllerState.TRACKING:
-            if excess_w is not None:
+            if sensors_available and excess_w is not None:
                 target_amps = self._compute_target_amps(excess_w)
                 # Apply minimum in Solar + Grid mode
                 if self._mode == Mode.SOLAR_PLUS_GRID and target_amps < min_amps:
@@ -485,12 +496,21 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Clamp to configured range
                 if target_amps > 0:
                     target_amps = max(min_amps, min(target_amps, max_amps))
+            else:
+                # Sensors unavailable during TRACKING - hold current amps
+                target_amps = self._commanded_amps or 0
+                _LOGGER.debug("TRACKING with unavailable sensors: holding amps=%d", target_amps)
         elif self._controller_state == ControllerState.STOPPING:
             # Hold current amps during stop timer
             target_amps = self._commanded_amps or 0
         
-        # Send commands
-        if self._controller_state in (ControllerState.TRACKING, ControllerState.FORCED):
+        # Send commands based on state
+        if self._controller_state == ControllerState.FORCED:
+            # Charge Now - always send commands
+            _LOGGER.debug("Sending FORCED commands: amps=%d, switch=on", target_amps)
+            await self._send_amps(target_amps)
+            await self._send_switch(on=True)
+        elif self._controller_state == ControllerState.TRACKING:
             if target_amps > 0:
                 await self._send_amps(target_amps)
                 await self._send_switch(on=True)
