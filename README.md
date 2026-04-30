@@ -30,7 +30,7 @@ Before installing this integration, you need:
 1. Open HACS in Home Assistant
 2. Click the three dots menu in the top right
 3. Select "Custom repositories"
-4. Add this repository URL: `https://github.com/me/tesla_solar_charger`
+4. Add this repository URL: `https://github.com/strepto42/TeslaBluetoothSolarCharger`
 5. Select category: "Integration"
 6. Click "Add"
 7. Find "Tesla Solar Charger" in HACS and install it
@@ -194,7 +194,7 @@ These may be added in future versions based on user feedback.
 
 ## Support
 
-For issues and feature requests, please use the [GitHub issue tracker](https://github.com/me/tesla_solar_charger/issues).
+For issues and feature requests, please use the [GitHub issue tracker](https://github.com/strepto42/TeslaBluetoothSolarCharger/issues).
 
 ## License
 
