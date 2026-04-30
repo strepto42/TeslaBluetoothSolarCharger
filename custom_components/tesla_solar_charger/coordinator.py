@@ -170,6 +170,23 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return None
             total_consumption_w += consumption_w
         
+        return self._compute_excess_w_with_values(production_w, total_consumption_w)
+
+    def _compute_excess_w_with_values(
+        self, production_w: float, consumption_w: float | None
+    ) -> float | None:
+        """Compute excess solar power with pre-read values.
+
+        Args:
+            production_w: Solar production in watts (0 if unavailable)
+            consumption_w: Home consumption in watts, or None if unavailable
+
+        Returns:
+            Excess watts available for charging, or None if consumption unavailable.
+        """
+        if consumption_w is None:
+            return None
+
         # Get configuration
         margin_w = self._get_config_value("margin_w", DEFAULT_MARGIN_W)
         consumption_excludes_charging = self.entry.data.get(
@@ -184,10 +201,10 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         
         # Compute excess
         if consumption_excludes_charging:
-            excess = production_w - total_consumption_w - margin_w
+            excess = production_w - consumption_w - margin_w
         else:
-            excess = production_w - (total_consumption_w - current_charge_w) - margin_w
-        
+            excess = production_w - (consumption_w - current_charge_w) - margin_w
+
         return excess
 
     def _compute_target_amps(self, excess_w: float) -> int:
@@ -441,8 +458,15 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Read sensors
         production_entity = self.entry.data.get("production_sensor")
-        production_w = self._read_power_w(production_entity)
-        
+        production_w_raw = self._read_power_w(production_entity)
+
+        # Treat unavailable production as 0W (no solar - e.g., inverter offline at night)
+        if production_w_raw is None:
+            production_w = 0.0
+            _LOGGER.debug("Production sensor unavailable, treating as 0W")
+        else:
+            production_w = production_w_raw
+
         consumption_entities = self.entry.data.get("consumption_sensors", [])
         consumption_w = 0.0
         consumption_valid = True
@@ -459,17 +483,17 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Read plug state
         plugged_in = self._read_plug_state()
         
-        # Compute excess
-        excess_w = self._compute_excess_w()
-        
+        # Compute excess (will use production_w which is 0 if unavailable)
+        excess_w = self._compute_excess_w_with_values(production_w, consumption_w)
+
         # Log sensor unavailability (but don't block execution)
-        sensors_available = production_w is not None and consumption_w is not None
+        sensors_available = consumption_w is not None  # Production unavailable is OK (treated as 0)
         if not sensors_available:
             if not self._sensor_unavailable_logged:
                 _LOGGER.warning(
-                    "Sensor unavailable - Production: %s, Consumption: %s. "
+                    "Consumption sensor unavailable - Consumption: %s. "
                     "Solar tracking disabled, but Charge Now and Off modes still work.",
-                    production_w, consumption_w
+                    consumption_w
                 )
                 self._sensor_unavailable_logged = True
         else:

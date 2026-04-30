@@ -78,6 +78,72 @@ class TestReadPowerW:
 
         assert result is None
 
+
+class TestProductionTreatedAsZero:
+    """Test that unavailable production is treated as 0W."""
+
+    @pytest.fixture
+    def coordinator(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ) -> TeslaSolarChargerCoordinator:
+        """Create coordinator instance."""
+        return TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+
+    @pytest.mark.asyncio
+    async def test_unavailable_production_treated_as_zero(
+        self, coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock
+    ):
+        """Test unavailable production sensor is treated as 0W."""
+        coordinator._mode = Mode.SOLAR_ONLY
+        coordinator._master_enabled = True
+
+        def get_state(entity_id: str):
+            if entity_id == "sensor.solar_production":
+                # Production unavailable (e.g., inverter offline at night)
+                return State(entity_id, STATE_UNAVAILABLE, {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "500", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Stopped", {})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+
+        data = await coordinator._async_update_data()
+
+        # Production should be 0 (treated as zero), not None
+        assert data["production_w"] == 0.0
+        # Excess should be calculated: 0 - 500 - 0 = -500W
+        assert data["excess_w"] == -500.0
+
+    @pytest.mark.asyncio
+    async def test_solar_tracking_works_with_unavailable_production(
+        self, coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock
+    ):
+        """Test solar tracking works when production unavailable (will show no excess)."""
+        coordinator._mode = Mode.SOLAR_ONLY
+        coordinator._master_enabled = True
+
+        def get_state(entity_id: str):
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, STATE_UNAVAILABLE, {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "1000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Stopped", {})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+
+        data = await coordinator._async_update_data()
+
+        # With 0 production and 1000W consumption, excess is negative
+        # Controller should be IDLE (no excess to track)
+        assert data["production_w"] == 0.0
+        assert data["excess_w"] < 0
+
     def test_returns_none_for_unknown(
         self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
     ):
