@@ -196,7 +196,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         
         # Calculate current charge power
         current_charge_w = 0.0
-        if not consumption_excludes_charging and self._commanded_amps:
+        if not consumption_excludes_charging and self._commanded_amps is not None:
             current_charge_w = voltage * self._commanded_amps
         
         # Compute excess
@@ -287,9 +287,16 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if elapsed < restart_delay:
                     # Still in cooldown
                     return
-            # Cooldown expired - can transition to TRACKING
+            # Cooldown timer expired - transition based on conditions
             self._cooldown_timer_start = None
-        
+            # Determine next state after cooldown
+            excess_sufficient = excess_w is not None and excess_w >= min_charging_w
+            if excess_sufficient:
+                self._controller_state = ControllerState.TRACKING
+            else:
+                self._controller_state = ControllerState.IDLE
+            return
+
         # Check production for Solar + Grid mode minimum threshold
         production_entity = self.entry.data.get("production_sensor")
         production_w = self._read_power_w(production_entity) or 0.0
