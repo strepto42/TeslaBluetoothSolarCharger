@@ -4,7 +4,7 @@ from enum import StrEnum
 DOMAIN = "tesla_solar_charger"
 
 # Platforms
-PLATFORMS = ["select", "number", "switch", "sensor"]
+PLATFORMS = ["select", "number", "switch", "sensor", "binary_sensor"]
 
 # Default values
 DEFAULT_NAME = "Tesla Solar Charger"

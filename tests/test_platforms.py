@@ -244,20 +244,76 @@ class TestDiagnosticSensors:
         assert sensor.native_value == 120
         assert sensor.native_unit_of_measurement == "s"
 
+
+class TestBinarySensors:
+    """Test binary_sensor entities (plugged_in, is_charging, last_command_succeeded)."""
+
     @pytest.mark.asyncio
-    async def test_last_command_succeeded_sensor(self, mock_hass: MagicMock):
-        """Test last command succeeded sensor."""
-        from custom_components.tesla_solar_charger.sensor import TeslaSolarChargerLastCommandSensor
+    async def test_plugged_in_binary_sensor(self, mock_hass: MagicMock):
+        """plugged_in is a binary sensor (is_on: bool), not a string sensor."""
+        from custom_components.tesla_solar_charger.binary_sensor import (
+            TeslaSolarChargerPluggedInBinarySensor,
+        )
 
         coordinator = MagicMock()
-        coordinator.data = {"last_command_succeeded": True}
-
+        coordinator.data = {"plugged_in": True}
         entry = MagicMock()
         entry.entry_id = "test"
 
-        sensor = TeslaSolarChargerLastCommandSensor(coordinator, entry)
+        sensor = TeslaSolarChargerPluggedInBinarySensor(coordinator, entry)
+        assert sensor.is_on is True
 
-        assert sensor.native_value == "on"
+        coordinator.data = {"plugged_in": False}
+        assert sensor.is_on is False
+
+    @pytest.mark.asyncio
+    async def test_is_charging_binary_sensor(self, mock_hass: MagicMock):
+        """is_charging is a binary sensor."""
+        from custom_components.tesla_solar_charger.binary_sensor import (
+            TeslaSolarChargerIsChargingBinarySensor,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {"is_charging": True}
+        entry = MagicMock()
+        entry.entry_id = "test"
+
+        sensor = TeslaSolarChargerIsChargingBinarySensor(coordinator, entry)
+        assert sensor.is_on is True
+
+    @pytest.mark.asyncio
+    async def test_last_command_succeeded_binary_sensor(self, mock_hass: MagicMock):
+        """last_command_succeeded is a binary sensor with None handling."""
+        from custom_components.tesla_solar_charger.binary_sensor import (
+            TeslaSolarChargerLastCommandBinarySensor,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {"last_command_succeeded": True}
+        entry = MagicMock()
+        entry.entry_id = "test"
+
+        sensor = TeslaSolarChargerLastCommandBinarySensor(coordinator, entry)
+        assert sensor.is_on is True
+
+        coordinator.data = {"last_command_succeeded": False}
+        assert sensor.is_on is False
+
+        # No command sent yet → unknown (is_on returns None)
+        coordinator.data = {"last_command_succeeded": None}
+        assert sensor.is_on is None
+
+
+class TestSensorPlatformDoesNotExposeBooleanSensors:
+    """The sensor platform should no longer export plugged_in/is_charging/last_command."""
+
+    def test_string_boolean_sensors_removed(self):
+        """Old string-based boolean sensor classes should not exist on sensor.py."""
+        from custom_components.tesla_solar_charger import sensor
+
+        assert not hasattr(sensor, "TeslaSolarChargerPluggedInSensor")
+        assert not hasattr(sensor, "TeslaSolarChargerIsChargingSensor")
+        assert not hasattr(sensor, "TeslaSolarChargerLastCommandSensor")
 
 
 class TestNumberEntities:

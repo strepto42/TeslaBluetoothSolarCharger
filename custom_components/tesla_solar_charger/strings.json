@@ -114,15 +114,6 @@
       "seconds_until_next_transition": {
         "name": "Seconds Until Next Transition"
       },
-      "last_command_succeeded": {
-        "name": "Last Command Succeeded"
-      },
-      "plugged_in": {
-        "name": "Plugged In"
-      },
-      "is_charging": {
-        "name": "Is Charging"
-      },
       "production": {
         "name": "Solar Production"
       },
@@ -131,6 +122,17 @@
       },
       "diagnostics": {
         "name": "Diagnostics"
+      }
+    },
+    "binary_sensor": {
+      "plugged_in": {
+        "name": "Plugged In"
+      },
+      "is_charging": {
+        "name": "Is Charging"
+      },
+      "last_command_succeeded": {
+        "name": "Last Command Succeeded"
       }
     }
   }

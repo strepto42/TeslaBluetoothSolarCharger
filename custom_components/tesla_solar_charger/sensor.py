@@ -31,9 +31,6 @@ async def async_setup_entry(
         TeslaSolarChargerExcessSolarSensor(coordinator, entry),
         TeslaSolarChargerStateSensor(coordinator, entry),
         TeslaSolarChargerTransitionSensor(coordinator, entry),
-        TeslaSolarChargerLastCommandSensor(coordinator, entry),
-        TeslaSolarChargerPluggedInSensor(coordinator, entry),
-        TeslaSolarChargerIsChargingSensor(coordinator, entry),
         TeslaSolarChargerProductionSensor(coordinator, entry),
         TeslaSolarChargerConsumptionSensor(coordinator, entry),
         TeslaSolarChargerDiagnosticsSensor(coordinator, entry),
@@ -168,68 +165,6 @@ class TeslaSolarChargerTransitionSensor(TeslaSolarChargerBaseSensor):
     def native_value(self) -> int | None:
         """Return seconds until next transition."""
         return self.coordinator.data.get("seconds_until_next_transition")
-
-
-class TeslaSolarChargerLastCommandSensor(TeslaSolarChargerBaseSensor):
-    """Sensor for last command status."""
-
-    _attr_translation_key = "last_command_succeeded"
-
-    def __init__(
-        self,
-        coordinator: TeslaSolarChargerCoordinator,
-        entry: ConfigEntry,
-    ) -> None:
-        """Initialize the sensor."""
-        super().__init__(coordinator, entry, "last_command_succeeded")
-
-    @property
-    def native_value(self) -> str | None:
-        """Return last command status as on/off string."""
-        succeeded = self.coordinator.data.get("last_command_succeeded")
-        if succeeded is None:
-            return None
-        return "on" if succeeded else "off"
-
-
-class TeslaSolarChargerPluggedInSensor(TeslaSolarChargerBaseSensor):
-    """Sensor for plugged in status."""
-
-    _attr_translation_key = "plugged_in"
-
-    def __init__(
-        self,
-        coordinator: TeslaSolarChargerCoordinator,
-        entry: ConfigEntry,
-    ) -> None:
-        """Initialize the sensor."""
-        super().__init__(coordinator, entry, "plugged_in")
-
-    @property
-    def native_value(self) -> str:
-        """Return plugged in status."""
-        plugged_in = self.coordinator.data.get("plugged_in", False)
-        return "yes" if plugged_in else "no"
-
-
-class TeslaSolarChargerIsChargingSensor(TeslaSolarChargerBaseSensor):
-    """Sensor for charging status."""
-
-    _attr_translation_key = "is_charging"
-
-    def __init__(
-        self,
-        coordinator: TeslaSolarChargerCoordinator,
-        entry: ConfigEntry,
-    ) -> None:
-        """Initialize the sensor."""
-        super().__init__(coordinator, entry, "is_charging")
-
-    @property
-    def native_value(self) -> str:
-        """Return charging status."""
-        is_charging = self.coordinator.data.get("is_charging", False)
-        return "yes" if is_charging else "no"
 
 
 class TeslaSolarChargerProductionSensor(TeslaSolarChargerBaseSensor):

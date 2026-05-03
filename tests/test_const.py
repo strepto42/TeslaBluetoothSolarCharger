@@ -42,7 +42,8 @@ class TestPlatforms:
         assert "number" in PLATFORMS
         assert "switch" in PLATFORMS
         assert "sensor" in PLATFORMS
-        assert len(PLATFORMS) == 4
+        assert "binary_sensor" in PLATFORMS
+        assert len(PLATFORMS) == 5
 
 
 class TestDefaults:
