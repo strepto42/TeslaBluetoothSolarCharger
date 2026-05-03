@@ -356,6 +356,7 @@ class TeslaSolarChargerOptionsFlow(OptionsFlow):
                 self.hass.config_entries.async_update_entry(
                     self.config_entry,
                     data=user_input,
+                    options=user_input,
                     title=user_input.get("name", DEFAULT_NAME),
                 )
                 return self.async_create_entry(title="", data={})
@@ -368,4 +369,3 @@ class TeslaSolarChargerOptionsFlow(OptionsFlow):
             data_schema=_get_options_schema(defaults),
             errors=errors,
         )
-
