@@ -145,7 +145,8 @@ These rules govern *how* work is done in this repo. They override default behavi
 
 Modes (user-selected via `select` entity):
 
-- **Off** — integration takes no actions. Existing charge state is left alone.
+- **Off** — disables solar tracking and turns the charging switch off
+  (once, debounced — no repeat commands afterwards). Amps are not changed.
 - **Solar Only** — track excess; stop below minimum.
 - **Solar + Grid** — track excess; floor at minimum while solar present.
 - **Charge Now** — force max amps and switch on; ignore solar.
@@ -159,9 +160,9 @@ States the coordinator tracks internally:
 - `COOLDOWN` — charging stopped; running 15-minute restart lockout.
 - `FORCED` — Charge Now mode active.
 
-Transitions are driven by the coordinator on every poll cycle (default 30 s).
-Timers are wall-clock; they survive across polls but reset on mode change or
-plug events.
+Transitions are driven by the coordinator on every poll cycle (default 5 s,
+configurable via the options flow). Timers are wall-clock; they survive
+across polls but reset on mode change or plug events.
 
 ## Architecture
 
@@ -174,7 +175,15 @@ plug events.
 5. Issue `number.set_value` / `switch.turn_on` / `switch.turn_off` service calls via `hass.services.async_call` — **only when the value differs from the last commanded value** (debounce). This protects the BLE link from flooding.
 6. Return a `dict[str, Any]` snapshot; all platform entities (`select.py`, `number.py`, `switch.py`, `sensor.py`) read from this dict and never call services directly.
 
-Config/options flow (`config_flow.py`) stores all upstream entity IDs in `entry.data`. Options (intervals, amps limits, margin) are in `entry.options`. The coordinator reads both via `_get_config_value`.
+Config/options flow (`config_flow.py`) splits user input by destination:
+entity bindings (`production_sensor`, `consumption_sensors`, `amps_number`,
+`charging_switch`, `charging_state_sensor`, `voltage`, `name`,
+`consumption_excludes_charging`) → `entry.data`; runtime tunables
+(`update_interval_seconds`, `min_solar_generation_w`, `stop_delay_seconds`,
+`restart_delay_seconds`) → `entry.options`. `min_amps`, `max_amps`,
+and `margin_w` are not in either flow — they're owned by the dashboard
+NumberEntity widgets, which write to `entry.options`. The coordinator
+reads both stores via `_get_config_value`.
 
 ## File layout
 
@@ -187,9 +196,10 @@ custom_components/tesla_solar_charger/
 ├── const.py                # DOMAIN, defaults, mode enum, state enum
 ├── coordinator.py          # control loop, state machine, hysteresis timers
 ├── select.py               # mode entity
-├── number.py               # min/max amps, margin, charge limit override
+├── number.py               # min amps, max amps, margin (dashboard tunables)
 ├── switch.py               # master enable
-├── sensor.py               # diagnostic sensors (target amps, excess, state)
+├── sensor.py               # numeric/string diagnostic sensors
+├── binary_sensor.py        # plugged_in, is_charging, last_command_succeeded
 ├── strings.json            # config flow text + translation keys
 └── translations/
     └── en.json
