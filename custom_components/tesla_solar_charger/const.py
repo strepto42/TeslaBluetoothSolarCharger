@@ -37,6 +37,41 @@ MARGIN_MAX = 5000
 MIN_SOLAR_GENERATION_MIN = 0
 MIN_SOLAR_GENERATION_MAX = 10000
 
+# Home battery awareness (optional — see ChargeHQ KB:
+# https://chargehq.net/kb/home-battery-charge-priority-limit-configuration)
+DEFAULT_BATTERY_PRIORITY_CHARGE_LIMIT_PCT = 80
+BATTERY_PRIORITY_LIMIT_MIN = 0
+BATTERY_PRIORITY_LIMIT_MAX = 100
+
+# Battery priority styles. "hard_cutoff" matches ChargeHQ's published
+# behaviour: below limit → battery priority, EV idle; at/above limit → all
+# excess to EV. "graduated" mirrors the bucketed deduction curve from a
+# known-good local Home Assistant automation: as SoC rises through 5%
+# bands above the limit, the deduction shrinks from 20A down to 1A.
+BATTERY_PRIORITY_STYLE_HARD_CUTOFF = "hard_cutoff"
+BATTERY_PRIORITY_STYLE_GRADUATED = "graduated"
+DEFAULT_BATTERY_PRIORITY_STYLE = BATTERY_PRIORITY_STYLE_HARD_CUTOFF
+BATTERY_PRIORITY_STYLES = (
+    BATTERY_PRIORITY_STYLE_HARD_CUTOFF,
+    BATTERY_PRIORITY_STYLE_GRADUATED,
+)
+
+# Bucket deductions for the graduated style, in amps. Buckets are evaluated
+# relative to the configured battery_priority_charge_limit_pct (L):
+#   SoC <= L              → 0 amps allowed (battery has full priority)
+#   L  <  SoC <= L+5      → -20 A
+#   L+5 <  SoC <= L+10    → -15 A
+#   L+10 < SoC <= L+15    → -10 A
+#   L+15 < SoC <= L+19    → -5  A
+#   SoC > L+19            → -1  A
+BATTERY_GRADUATED_BUCKETS_A: tuple[tuple[int, int], ...] = (
+    (5, 20),
+    (10, 15),
+    (15, 10),
+    (19, 5),
+)
+BATTERY_GRADUATED_TOP_DEDUCTION_A = 1
+
 
 class Mode(StrEnum):
     """Charging modes."""

@@ -249,9 +249,10 @@ class TestComputeExcessWWithValues:
     def coordinator(
         self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
     ) -> TeslaSolarChargerCoordinator:
-        """Create coordinator instance."""
+        """Create coordinator with EV actively charging at 10A."""
         coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
         coord._commanded_amps = 10  # Simulating 10A commanded
+        coord._is_charging = True  # Switch is on, EV is actually drawing
         return coord
 
     def test_basic_excess_calculation(
@@ -723,6 +724,7 @@ class TestSolarOnlyMode:
         mock_config_entry.options["min_amps"] = 5
         coordinator._controller_state = ControllerState.TRACKING
         coordinator._commanded_amps = 5
+        coordinator._is_charging = True  # EV currently drawing
 
         def get_state(entity_id: str):
             states = {
@@ -1022,4 +1024,413 @@ class TestEdgeCases:
 
         # Cooldown timer should be cleared
         assert coordinator._cooldown_timer_start is None
+
+
+class TestIsChargingGating:
+    """The back-out estimate must respect _is_charging.
+
+    When the switch is off, the EV draws zero — even if _commanded_amps is
+    still set to the last commanded value. Gating prevents the excess
+    formula from inflating household-load by a stale EV draw estimate.
+    """
+
+    @pytest.fixture
+    def coordinator(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ) -> TeslaSolarChargerCoordinator:
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        coord._commanded_amps = 10
+        return coord
+
+    def test_excess_uses_zero_charge_when_switch_off(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        """When switch is off, the back-out current_charge_w is 0."""
+        coordinator._is_charging = False
+        # production=3000, consumption=1000 (no EV currently drawing)
+        # If gating were broken: excess = 3000 - (1000 - 2300) - 0 = 4300 (wrong)
+        # Correct: excess = 3000 - (1000 - 0) - 0 = 2000
+        result = coordinator._compute_excess_w_with_values(3000.0, 1000.0)
+        assert result == 2000.0
+
+    def test_excess_uses_commanded_when_switch_on(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        """When switch is on, the back-out current_charge_w = voltage * commanded_amps."""
+        coordinator._is_charging = True
+        # 3000 - (3300 - 2300) - 0 = 2000
+        result = coordinator._compute_excess_w_with_values(3000.0, 3300.0)
+        assert result == 2000.0
+
+
+class TestReadBatteryState:
+    """Test _read_battery_state helper."""
+
+    @pytest.fixture
+    def coordinator(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ) -> TeslaSolarChargerCoordinator:
+        return TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+
+    def test_returns_none_pair_when_unconfigured(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        """No battery sensors set → (None, None)."""
+        # Default fixture has no battery sensors configured
+        charge_w, soc = coordinator._read_battery_state()
+        assert charge_w is None
+        assert soc is None
+
+    def test_reads_when_positive_is_charging(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """positive_is_charging=True: sensor 1500W → returns +1500W (charging)."""
+        mock_config_entry.data["battery_power_sensor"] = "sensor.battery_power"
+        mock_config_entry.data["battery_soc_sensor"] = "sensor.battery_soc"
+        mock_config_entry.data["battery_power_positive_is_charging"] = True
+
+        def get_state(entity_id: str):
+            if entity_id == "sensor.battery_power":
+                return State(entity_id, "1500", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.battery_soc":
+                return State(entity_id, "75", {"unit_of_measurement": "%"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+
+        charge_w, soc = coordinator._read_battery_state()
+        assert charge_w == 1500.0
+        assert soc == 75.0
+
+    def test_normalises_when_positive_is_discharging(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """positive_is_charging=False: sensor +1500W (discharging) → -1500W after normalise."""
+        mock_config_entry.data["battery_power_sensor"] = "sensor.battery_power"
+        mock_config_entry.data["battery_soc_sensor"] = "sensor.battery_soc"
+        mock_config_entry.data["battery_power_positive_is_charging"] = False
+
+        def get_state(entity_id: str):
+            if entity_id == "sensor.battery_power":
+                return State(entity_id, "1500", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.battery_soc":
+                return State(entity_id, "75", {"unit_of_measurement": "%"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+
+        charge_w, soc = coordinator._read_battery_state()
+        assert charge_w == -1500.0
+        assert soc == 75.0
+
+    def test_returns_none_pair_when_power_unavailable(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """Power sensor unavailable → (None, None) (skip battery awareness this cycle)."""
+        mock_config_entry.data["battery_power_sensor"] = "sensor.battery_power"
+        mock_config_entry.data["battery_soc_sensor"] = "sensor.battery_soc"
+        mock_config_entry.data["battery_power_positive_is_charging"] = True
+
+        def get_state(entity_id: str):
+            if entity_id == "sensor.battery_power":
+                return State(entity_id, STATE_UNAVAILABLE, {"unit_of_measurement": "W"})
+            if entity_id == "sensor.battery_soc":
+                return State(entity_id, "75", {"unit_of_measurement": "%"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+
+        charge_w, soc = coordinator._read_battery_state()
+        assert charge_w is None
+        assert soc is None
+
+    def test_returns_none_pair_when_soc_unavailable(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """SoC sensor unavailable → (None, None)."""
+        mock_config_entry.data["battery_power_sensor"] = "sensor.battery_power"
+        mock_config_entry.data["battery_soc_sensor"] = "sensor.battery_soc"
+        mock_config_entry.data["battery_power_positive_is_charging"] = True
+
+        def get_state(entity_id: str):
+            if entity_id == "sensor.battery_power":
+                return State(entity_id, "1500", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.battery_soc":
+                return State(entity_id, STATE_UNKNOWN, {"unit_of_measurement": "%"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+
+        charge_w, soc = coordinator._read_battery_state()
+        assert charge_w is None
+        assert soc is None
+
+
+class TestApplyBatteryPriorityHardCutoff:
+    """Hard-cutoff style: SoC < limit → excess=0; SoC >= limit → unchanged."""
+
+    @pytest.fixture
+    def coordinator(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ) -> TeslaSolarChargerCoordinator:
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        mock_config_entry.options["battery_priority_charge_limit_pct"] = 80
+        mock_config_entry.options["battery_priority_style"] = "hard_cutoff"
+        return coord
+
+    def test_below_limit_zeros_excess(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        assert coordinator._apply_battery_priority(5000.0, 79.0) == 0.0
+
+    def test_at_limit_passes_through(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        assert coordinator._apply_battery_priority(5000.0, 80.0) == 5000.0
+
+    def test_above_limit_passes_through(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        assert coordinator._apply_battery_priority(5000.0, 95.0) == 5000.0
+
+    def test_no_battery_passes_through(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        assert coordinator._apply_battery_priority(5000.0, None) == 5000.0
+
+    def test_excess_none_passes_through(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        assert coordinator._apply_battery_priority(None, 50.0) is None
+
+
+class TestApplyBatteryPriorityGraduated:
+    """Graduated style mirrors Olaf's curve, relative to the configured limit.
+
+    Buckets (with limit=L, voltage=230):
+      SoC <= L                    → excess = 0  (battery priority)
+      L  <  SoC <= L+5            → excess -= 20 * 230 = 4600 W
+      L+5 <  SoC <= L+10          → excess -= 15 * 230 = 3450 W
+      L+10 < SoC <= L+15          → excess -= 10 * 230 = 2300 W
+      L+15 < SoC <= L+19          → excess -=  5 * 230 = 1150 W
+      SoC > L+19                  → excess -=  1 * 230 =  230 W
+    Result clamped to >= 0.
+    """
+
+    @pytest.fixture
+    def coordinator(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ) -> TeslaSolarChargerCoordinator:
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        mock_config_entry.options["battery_priority_charge_limit_pct"] = 80
+        mock_config_entry.options["battery_priority_style"] = "graduated"
+        return coord
+
+    def test_at_or_below_limit_zeros(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        assert coordinator._apply_battery_priority(10000.0, 80.0) == 0.0
+        assert coordinator._apply_battery_priority(10000.0, 50.0) == 0.0
+
+    def test_first_bucket_subtracts_20_amps(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        # SoC=85 (limit+5) → bucket 1 → -20A * 230V = -4600W
+        assert coordinator._apply_battery_priority(10000.0, 85.0) == 10000.0 - 4600.0
+
+    def test_second_bucket_subtracts_15_amps(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        # SoC=90 (limit+10) → bucket 2 → -15A * 230V = -3450W
+        assert coordinator._apply_battery_priority(10000.0, 90.0) == 10000.0 - 3450.0
+
+    def test_third_bucket_subtracts_10_amps(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        # SoC=95 (limit+15) → bucket 3 → -10A * 230V = -2300W
+        assert coordinator._apply_battery_priority(10000.0, 95.0) == 10000.0 - 2300.0
+
+    def test_fourth_bucket_subtracts_5_amps(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        # SoC=99 (limit+19) → bucket 4 → -5A * 230V = -1150W
+        assert coordinator._apply_battery_priority(10000.0, 99.0) == 10000.0 - 1150.0
+
+    def test_fifth_bucket_subtracts_1_amp(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        # SoC=100 (>limit+19) → bucket 5 → -1A * 230V = -230W
+        assert coordinator._apply_battery_priority(10000.0, 100.0) == 10000.0 - 230.0
+
+    def test_clamps_to_zero_when_deduction_exceeds_excess(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        # SoC=85 → -4600W. excess=2000 → clamped to 0
+        assert coordinator._apply_battery_priority(2000.0, 85.0) == 0.0
+
+    def test_relative_buckets_with_lower_limit(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_config_entry: ConfigEntry,
+    ):
+        """With limit=60, bucket 1 covers 60 < SoC <= 65."""
+        mock_config_entry.options["battery_priority_charge_limit_pct"] = 60
+        # SoC=65 → first bucket → -4600W
+        assert coordinator._apply_battery_priority(10000.0, 65.0) == 10000.0 - 4600.0
+        # SoC=60 → at limit → zero
+        assert coordinator._apply_battery_priority(10000.0, 60.0) == 0.0
+
+
+class TestBatteryAwarenessIntegration:
+    """End-to-end via _async_update_data with battery sensors configured."""
+
+    @pytest.fixture
+    def coordinator(
+        self,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ) -> TeslaSolarChargerCoordinator:
+        mock_config_entry.data["battery_power_sensor"] = "sensor.battery_power"
+        mock_config_entry.data["battery_soc_sensor"] = "sensor.battery_soc"
+        mock_config_entry.data["battery_power_positive_is_charging"] = True
+        mock_config_entry.options["battery_priority_charge_limit_pct"] = 80
+        mock_config_entry.options["battery_priority_style"] = "hard_cutoff"
+
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        coord._mode = Mode.SOLAR_ONLY
+        coord._master_enabled = True
+        coord._was_plugged_in = True
+        coord._controller_state = ControllerState.TRACKING
+        return coord
+
+    @pytest.mark.asyncio
+    async def test_below_limit_with_solar_goes_to_stopping(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+    ):
+        """SoC below limit blocks EV charging even with abundant solar."""
+        def get_state(entity_id: str):
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "5000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "500", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Charging", {})
+            if entity_id == "sensor.battery_power":
+                return State(entity_id, "2000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.battery_soc":
+                return State(entity_id, "60", {"unit_of_measurement": "%"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        data = await coordinator._async_update_data()
+
+        # Battery priority active → excess gated to 0 → state goes to STOPPING
+        assert data["controller_state"] == ControllerState.STOPPING.value
+        assert data["battery_priority_active"] is True
+        assert data["battery_soc_pct"] == 60.0
+        assert data["battery_power_w"] == 2000.0
+
+    @pytest.mark.asyncio
+    async def test_above_limit_charges_normally(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+    ):
+        """SoC at/above limit → battery flow ignored, normal tracking."""
+        def get_state(entity_id: str):
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "5000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "500", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Charging", {})
+            if entity_id == "sensor.battery_power":
+                return State(entity_id, "2000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.battery_soc":
+                return State(entity_id, "85", {"unit_of_measurement": "%"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        data = await coordinator._async_update_data()
+
+        assert data["controller_state"] == ControllerState.TRACKING.value
+        assert data["battery_priority_active"] is False
+        assert data["target_amps"] > 0
+
+    @pytest.mark.asyncio
+    async def test_battery_unavailable_falls_back(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+    ):
+        """Battery sensor unavailable → fall back to no-battery formula (no gating)."""
+        def get_state(entity_id: str):
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "5000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "500", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Charging", {})
+            if entity_id == "sensor.battery_power":
+                return State(entity_id, STATE_UNAVAILABLE, {"unit_of_measurement": "W"})
+            if entity_id == "sensor.battery_soc":
+                return State(entity_id, "60", {"unit_of_measurement": "%"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        data = await coordinator._async_update_data()
+
+        # No gating despite SoC=60 because power sensor is unavailable
+        assert data["battery_priority_active"] is False
+        assert data["battery_soc_pct"] is None
+        assert data["battery_power_w"] is None
+        assert data["controller_state"] == ControllerState.TRACKING.value
+
+
+class TestBuildDataDictBatteryKeys:
+    """Data dict exposes battery state keys (None when unconfigured)."""
+
+    @pytest.fixture
+    def coordinator(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ) -> TeslaSolarChargerCoordinator:
+        return TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+
+    @pytest.mark.asyncio
+    async def test_battery_keys_present_when_unconfigured(
+        self, coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+    ):
+        """Even with no battery sensors, the data dict includes the keys (None)."""
+        coordinator._mode = Mode.OFF
+        coordinator._master_enabled = True
+
+        def get_state(entity_id: str):
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Disconnected", {})
+            return State(entity_id, "1000", {"unit_of_measurement": "W"})
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        data = await coordinator._async_update_data()
+
+        assert "battery_power_w" in data
+        assert "battery_soc_pct" in data
+        assert "battery_priority_active" in data
+        assert data["battery_power_w"] is None
+        assert data["battery_soc_pct"] is None
+        assert data["battery_priority_active"] is False
 

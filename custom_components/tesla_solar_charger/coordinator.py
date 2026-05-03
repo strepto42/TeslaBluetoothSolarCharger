@@ -12,6 +12,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
+    BATTERY_GRADUATED_BUCKETS_A,
+    BATTERY_GRADUATED_TOP_DEDUCTION_A,
+    BATTERY_PRIORITY_STYLE_GRADUATED,
+    BATTERY_PRIORITY_STYLE_HARD_CUTOFF,
+    DEFAULT_BATTERY_PRIORITY_CHARGE_LIMIT_PCT,
+    DEFAULT_BATTERY_PRIORITY_STYLE,
     DEFAULT_MARGIN_W,
     DEFAULT_MAX_AMPS,
     DEFAULT_MIN_AMPS,
@@ -162,9 +168,15 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         voltage = self.entry.data.get("voltage", DEFAULT_VOLTAGE)
         
-        # Calculate current charge power
+        # Calculate current charge power. Gated on _is_charging so the
+        # back-out doesn't inflate household-load with a stale commanded
+        # amps value when the switch is actually off.
         current_charge_w = 0.0
-        if not consumption_excludes_charging and self._commanded_amps is not None:
+        if (
+            not consumption_excludes_charging
+            and self._commanded_amps is not None
+            and self._is_charging
+        ):
             current_charge_w = voltage * self._commanded_amps
         
         # Compute excess
@@ -174,6 +186,89 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             excess = production_w - (consumption_w - current_charge_w) - margin_w
 
         return excess
+
+    def _read_battery_state(self) -> tuple[float | None, float | None]:
+        """Read home battery power and SoC.
+
+        Returns (charge_w, soc_pct), where charge_w is normalised so a
+        positive value means the battery is *charging* (absorbing power),
+        regardless of which sign convention the user's sensor uses.
+
+        Returns (None, None) if either sensor is unconfigured, unavailable,
+        or unparseable. Battery awareness is then skipped this cycle.
+        """
+        power_entity = self.entry.data.get("battery_power_sensor")
+        soc_entity = self.entry.data.get("battery_soc_sensor")
+        if not power_entity or not soc_entity:
+            return None, None
+
+        charge_w = self._read_power_w(power_entity)
+        if charge_w is None:
+            return None, None
+
+        soc_state = self.hass.states.get(soc_entity)
+        if soc_state is None or soc_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None, None
+        try:
+            soc_pct = float(soc_state.state)
+        except (ValueError, TypeError):
+            return None, None
+
+        positive_is_charging = self.entry.data.get(
+            "battery_power_positive_is_charging", True
+        )
+        if not positive_is_charging:
+            charge_w = -charge_w
+
+        return charge_w, soc_pct
+
+    def _apply_battery_priority(
+        self, excess_w: float | None, soc_pct: float | None
+    ) -> float | None:
+        """Apply home-battery priority gating to the raw excess.
+
+        Mirrors ChargeHQ's published behaviour. With style=hard_cutoff:
+        SoC < limit zeros excess (battery has priority); SoC >= limit
+        passes excess through unchanged.
+
+        With style=graduated, deductions in 5% SoC bands above the limit
+        taper from -20A down to -1A (curve borrowed from a known-good
+        local Home Assistant automation).
+
+        If excess_w or soc_pct is None, returns excess_w unchanged.
+        """
+        if excess_w is None or soc_pct is None:
+            return excess_w
+
+        limit = float(
+            self._get_config_value(
+                "battery_priority_charge_limit_pct",
+                DEFAULT_BATTERY_PRIORITY_CHARGE_LIMIT_PCT,
+            )
+        )
+        style = self._get_config_value(
+            "battery_priority_style", DEFAULT_BATTERY_PRIORITY_STYLE
+        )
+
+        if style == BATTERY_PRIORITY_STYLE_HARD_CUTOFF:
+            # ChargeHQ: "Once the limit is reached, all excess solar will
+            # be used for EV charging." → strict less-than.
+            return 0.0 if soc_pct < limit else excess_w
+
+        # Graduated: at or below the limit, battery has full priority.
+        if soc_pct <= limit:
+            return 0.0
+
+        # Pick the bucket whose upper bound covers (soc - limit).
+        offset = soc_pct - limit
+        deduction_a = BATTERY_GRADUATED_TOP_DEDUCTION_A
+        for upper_offset, bucket_a in BATTERY_GRADUATED_BUCKETS_A:
+            if offset <= upper_offset:
+                deduction_a = bucket_a
+                break
+
+        voltage = self.entry.data.get("voltage", DEFAULT_VOLTAGE)
+        return max(0.0, excess_w - deduction_a * voltage)
 
     def _compute_target_amps(self, excess_w: float) -> int:
         """Compute target charging amps from excess watts.
@@ -448,9 +543,20 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         
         # Read plug state
         plugged_in = self._read_plug_state()
-        
-        # Compute excess (will use production_w which is 0 if unavailable)
+
+        # Read home battery state (None pair if unconfigured/unavailable)
+        battery_power_w, battery_soc_pct = self._read_battery_state()
+
+        # Compute excess (will use production_w which is 0 if unavailable),
+        # then apply battery-priority gating if a battery is configured.
         excess_w = self._compute_excess_w_with_values(production_w, consumption_w)
+        excess_w_pre_battery = excess_w
+        excess_w = self._apply_battery_priority(excess_w, battery_soc_pct)
+        battery_priority_active = (
+            battery_soc_pct is not None
+            and excess_w_pre_battery is not None
+            and excess_w != excess_w_pre_battery
+        )
 
         # Log sensor unavailability (but don't block execution)
         sensors_available = consumption_w is not None  # Production unavailable is OK (treated as 0)
@@ -517,6 +623,9 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             excess_w=excess_w,
             plugged_in=plugged_in,
             target_amps=target_amps,
+            battery_power_w=battery_power_w,
+            battery_soc_pct=battery_soc_pct,
+            battery_priority_active=battery_priority_active,
         )
 
     def _build_data_dict(
@@ -526,6 +635,9 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         excess_w: float | None,
         plugged_in: bool,
         target_amps: int | None,
+        battery_power_w: float | None,
+        battery_soc_pct: float | None,
+        battery_priority_active: bool,
     ) -> dict[str, Any]:
         """Build the data dictionary returned by the coordinator."""
         return {
@@ -541,4 +653,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "seconds_until_next_transition": self._compute_seconds_until_transition(),
             "last_command_sent_at": self._last_command_sent_at,
             "last_command_succeeded": self._last_command_succeeded,
+            "battery_power_w": battery_power_w,
+            "battery_soc_pct": battery_soc_pct,
+            "battery_priority_active": battery_priority_active,
         }
