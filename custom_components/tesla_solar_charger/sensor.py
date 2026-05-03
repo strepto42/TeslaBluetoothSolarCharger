@@ -289,7 +289,6 @@ class TeslaSolarChargerDiagnosticsSensor(TeslaSolarChargerBaseSensor):
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, entry, "diagnostics")
-        self._entry = entry
 
     @property
     def native_value(self) -> str:

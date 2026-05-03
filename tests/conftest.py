@@ -14,6 +14,18 @@ from homeassistant.config_entries import ConfigEntry
 from custom_components.tesla_solar_charger.const import DOMAIN
 
 
+@pytest.fixture(autouse=True)
+def _bypass_frame_helper() -> Generator[None, None, None]:
+    """Bypass HA's frame helper for unit tests using MagicMock(spec=HomeAssistant).
+
+    DataUpdateCoordinator.__init__ calls frame.report_usage(), which requires
+    the frame helper to be initialized — something only the real `hass`
+    fixture sets up. We don't need that telemetry in pure unit tests.
+    """
+    with patch("homeassistant.helpers.frame.report_usage"):
+        yield
+
+
 @pytest.fixture
 def mock_config_entry() -> ConfigEntry:
     """Create a mock config entry."""
@@ -81,52 +93,4 @@ def mock_hass() -> MagicMock:
     return hass
 
 
-@pytest.fixture
-def mock_states() -> dict[str, State]:
-    """Create mock states for testing various scenarios."""
-    return {
-        "production_3kw": State(
-            "sensor.solar_production", "3000",
-            {"unit_of_measurement": UnitOfPower.WATT}
-        ),
-        "production_5kw": State(
-            "sensor.solar_production", "5000",
-            {"unit_of_measurement": UnitOfPower.WATT}
-        ),
-        "production_500w": State(
-            "sensor.solar_production", "500",
-            {"unit_of_measurement": UnitOfPower.WATT}
-        ),
-        "production_kw": State(
-            "sensor.solar_production", "3.5",
-            {"unit_of_measurement": UnitOfPower.KILO_WATT}
-        ),
-        "production_unavailable": State(
-            "sensor.solar_production", "unavailable",
-            {"unit_of_measurement": UnitOfPower.WATT}
-        ),
-        "consumption_1500w": State(
-            "sensor.home_consumption", "1500",
-            {"unit_of_measurement": UnitOfPower.WATT}
-        ),
-        "consumption_2kw": State(
-            "sensor.home_consumption", "2000",
-            {"unit_of_measurement": UnitOfPower.WATT}
-        ),
-        "charging_state_disconnected": State(
-            "sensor.tesla_charging_state", "Disconnected", {}
-        ),
-        "charging_state_charging": State(
-            "sensor.tesla_charging_state", "Charging", {}
-        ),
-        "charging_state_stopped": State(
-            "sensor.tesla_charging_state", "Stopped", {}
-        ),
-        "charging_state_complete": State(
-            "sensor.tesla_charging_state", "Complete", {}
-        ),
-        "charging_state_unavailable": State(
-            "sensor.tesla_charging_state", "unavailable", {}
-        ),
-    }
 

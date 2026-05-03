@@ -78,6 +78,40 @@ class TestReadPowerW:
 
         assert result is None
 
+    def test_returns_none_for_unknown(
+        self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
+    ):
+        """Test unknown sensors return None."""
+        mock_hass.states.get = MagicMock(return_value=State(
+            "sensor.power", STATE_UNKNOWN, {"unit_of_measurement": "W"}
+        ))
+
+        result = coordinator._read_power_w("sensor.power")
+
+        assert result is None
+
+    def test_returns_none_for_missing_entity(
+        self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
+    ):
+        """Test missing entities return None."""
+        mock_hass.states.get = MagicMock(return_value=None)
+
+        result = coordinator._read_power_w("sensor.nonexistent")
+
+        assert result is None
+
+    def test_returns_none_for_non_numeric(
+        self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
+    ):
+        """Test non-numeric values return None."""
+        mock_hass.states.get = MagicMock(return_value=State(
+            "sensor.power", "not_a_number", {"unit_of_measurement": "W"}
+        ))
+
+        result = coordinator._read_power_w("sensor.power")
+
+        assert result is None
+
 
 class TestProductionTreatedAsZero:
     """Test that unavailable production is treated as 0W."""
@@ -144,40 +178,6 @@ class TestProductionTreatedAsZero:
         assert data["production_w"] == 0.0
         assert data["excess_w"] < 0
 
-    def test_returns_none_for_unknown(
-        self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
-    ):
-        """Test unknown sensors return None."""
-        mock_hass.states.get = MagicMock(return_value=State(
-            "sensor.power", STATE_UNKNOWN, {"unit_of_measurement": "W"}
-        ))
-
-        result = coordinator._read_power_w("sensor.power")
-
-        assert result is None
-
-    def test_returns_none_for_missing_entity(
-        self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
-    ):
-        """Test missing entities return None."""
-        mock_hass.states.get = MagicMock(return_value=None)
-
-        result = coordinator._read_power_w("sensor.nonexistent")
-
-        assert result is None
-
-    def test_returns_none_for_non_numeric(
-        self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
-    ):
-        """Test non-numeric values return None."""
-        mock_hass.states.get = MagicMock(return_value=State(
-            "sensor.power", "not_a_number", {"unit_of_measurement": "W"}
-        ))
-
-        result = coordinator._read_power_w("sensor.power")
-
-        assert result is None
-
 
 class TestReadPlugState:
     """Test _read_plug_state helper method."""
@@ -242,8 +242,8 @@ class TestReadPlugState:
         assert result is False
 
 
-class TestComputeExcessW:
-    """Test _compute_excess_w calculation."""
+class TestComputeExcessWWithValues:
+    """Test _compute_excess_w_with_values calculation (the live helper)."""
 
     @pytest.fixture
     def coordinator(
@@ -255,129 +255,51 @@ class TestComputeExcessW:
         return coord
 
     def test_basic_excess_calculation(
-        self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
+        self, coordinator: TeslaSolarChargerCoordinator
     ):
-        """Test basic excess calculation when consumption includes charging.
+        """Test basic excess when consumption includes charging.
 
         Formula: excess = production - (consumption - current_charge) - margin
-        With 5000W production, 3000W consumption (including 2300W charging at 10A@230V):
+        5000W production, 3000W consumption (incl. 2300W charging at 10A@230V):
         excess = 5000 - (3000 - 2300) - 0 = 4300W
         """
-        def get_state(entity_id: str):
-            if entity_id == "sensor.solar_production":
-                return State(entity_id, "5000", {"unit_of_measurement": "W"})
-            elif entity_id == "sensor.home_consumption":
-                return State(entity_id, "3000", {"unit_of_measurement": "W"})
-            return None
-
-        mock_hass.states.get = MagicMock(side_effect=get_state)
-
-        result = coordinator._compute_excess_w()
-
-        # 5000 - (3000 - 2300) - 0 = 4300
+        result = coordinator._compute_excess_w_with_values(5000.0, 3000.0)
         assert result == 4300.0
 
     def test_excess_with_margin(
         self, coordinator: TeslaSolarChargerCoordinator,
-        mock_hass: MagicMock,
-        mock_config_entry: ConfigEntry
+        mock_config_entry: ConfigEntry,
     ):
-        """Test excess calculation respects margin setting.
-
-        With margin of 200W:
-        excess = 5000 - (3000 - 2300) - 200 = 4100W
-        """
+        """Test excess calculation respects margin setting."""
         mock_config_entry.options["margin_w"] = 200
-
-        def get_state(entity_id: str):
-            if entity_id == "sensor.solar_production":
-                return State(entity_id, "5000", {"unit_of_measurement": "W"})
-            elif entity_id == "sensor.home_consumption":
-                return State(entity_id, "3000", {"unit_of_measurement": "W"})
-            return None
-
-        mock_hass.states.get = MagicMock(side_effect=get_state)
-
-        result = coordinator._compute_excess_w()
-
+        result = coordinator._compute_excess_w_with_values(5000.0, 3000.0)
+        # 5000 - (3000 - 2300) - 200 = 4100
         assert result == 4100.0
 
     def test_excess_when_consumption_excludes_charging(
         self, coordinator: TeslaSolarChargerCoordinator,
-        mock_hass: MagicMock,
-        mock_config_entry: ConfigEntry
+        mock_config_entry: ConfigEntry,
     ):
-        """Test calculation when consumption does NOT include EV charging.
-
-        When consumption_excludes_charging is True:
-        excess = production - consumption - margin
-        (Do NOT add back current_charge_w)
-        """
+        """Consumption excludes EV → don't add charging back."""
         mock_config_entry.data["consumption_excludes_charging"] = True
-
-        def get_state(entity_id: str):
-            if entity_id == "sensor.solar_production":
-                return State(entity_id, "5000", {"unit_of_measurement": "W"})
-            elif entity_id == "sensor.home_consumption":
-                return State(entity_id, "700", {"unit_of_measurement": "W"})
-            return None
-
-        mock_hass.states.get = MagicMock(side_effect=get_state)
-
-        result = coordinator._compute_excess_w()
-
-        # 5000 - 700 - 0 = 4300 (no adding back charging)
+        result = coordinator._compute_excess_w_with_values(5000.0, 700.0)
+        # 5000 - 700 - 0 = 4300
         assert result == 4300.0
 
-    def test_returns_none_when_production_unavailable(
-        self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
+    def test_returns_none_when_consumption_unavailable(
+        self, coordinator: TeslaSolarChargerCoordinator
     ):
-        """Test returns None when production sensor unavailable."""
-        def get_state(entity_id: str):
-            if entity_id == "sensor.solar_production":
-                return State(entity_id, STATE_UNAVAILABLE, {"unit_of_measurement": "W"})
-            elif entity_id == "sensor.home_consumption":
-                return State(entity_id, "1000", {"unit_of_measurement": "W"})
-            return None
-
-        mock_hass.states.get = MagicMock(side_effect=get_state)
-
-        result = coordinator._compute_excess_w()
-
+        """Returns None when consumption is None (sensor unavailable)."""
+        result = coordinator._compute_excess_w_with_values(5000.0, None)
         assert result is None
 
-    def test_sums_multiple_consumption_sensors(
-        self, coordinator: TeslaSolarChargerCoordinator,
-        mock_hass: MagicMock,
-        mock_config_entry: ConfigEntry
+    def test_production_zero_treated_normally(
+        self, coordinator: TeslaSolarChargerCoordinator
     ):
-        """Test multiple consumption sensors are summed."""
-        mock_config_entry.data["consumption_sensors"] = [
-            "sensor.consumption_1",
-            "sensor.consumption_2",
-        ]
-
-        def get_state(entity_id: str):
-            states = {
-                "sensor.solar_production": State(
-                    entity_id, "5000", {"unit_of_measurement": "W"}
-                ),
-                "sensor.consumption_1": State(
-                    entity_id, "1000", {"unit_of_measurement": "W"}
-                ),
-                "sensor.consumption_2": State(
-                    entity_id, "500", {"unit_of_measurement": "W"}
-                ),
-            }
-            return states.get(entity_id)
-
-        mock_hass.states.get = MagicMock(side_effect=get_state)
-
-        result = coordinator._compute_excess_w()
-
-        # 5000 - (1500 - 2300) - 0 = 5800 (but capped to available)
-        # Actually: 5000 - (1500 - 2300) - 0 = 5800
-        assert result == 5800.0
+        """Production of 0 is a valid value, computes negative excess."""
+        result = coordinator._compute_excess_w_with_values(0.0, 1000.0)
+        # 0 - (1000 - 2300) - 0 = 1300 (consumption includes EV draw)
+        assert result == 1300.0
 
 
 class TestTargetAmpsCalculation:
@@ -425,12 +347,27 @@ class TestTargetAmpsCalculation:
     def test_target_amps_zero_returns_zero(
         self, coordinator: TeslaSolarChargerCoordinator
     ):
-        """Test zero/negative excess returns 0."""
+        """Test zero/negative excess returns 0 (not min_amps)."""
         result = coordinator._compute_target_amps(0.0)
         assert result == 0
 
         result = coordinator._compute_target_amps(-500.0)
         assert result == 0
+
+    def test_target_amps_positive_below_min_clamps_to_min(
+        self, coordinator: TeslaSolarChargerCoordinator,
+        mock_config_entry: ConfigEntry,
+    ):
+        """Positive excess below min_amps*voltage clamps up to min_amps.
+
+        Per CLAUDE.md: target_amps clamped to [min_amps, max_amps].
+        Zero is the only value below min_amps that survives — it signals
+        "stop charging" rather than "charge at minimum".
+        """
+        mock_config_entry.options["min_amps"] = 5
+        # 230W = 1A worth of excess, below min_amps (5)
+        result = coordinator._compute_target_amps(230.0)
+        assert result == 5
 
 
 class TestStateMachine:
@@ -454,7 +391,7 @@ class TestStateMachine:
     ):
         """Test state is DISABLED when mode is Off."""
         coordinator._mode = Mode.OFF
-        coordinator._update_state_machine(plugged_in=True, excess_w=5000)
+        coordinator._update_state_machine(plugged_in=True, excess_w=5000, production_w=0.0)
 
         assert coordinator._controller_state == ControllerState.DISABLED
 
@@ -464,7 +401,7 @@ class TestStateMachine:
         """Test state is DISABLED when master enable is off."""
         coordinator._mode = Mode.SOLAR_ONLY
         coordinator._master_enabled = False
-        coordinator._update_state_machine(plugged_in=True, excess_w=5000)
+        coordinator._update_state_machine(plugged_in=True, excess_w=5000, production_w=0.0)
 
         assert coordinator._controller_state == ControllerState.DISABLED
 
@@ -474,7 +411,7 @@ class TestStateMachine:
         """Test state is IDLE when car not plugged in."""
         coordinator._mode = Mode.SOLAR_ONLY
         coordinator._master_enabled = True
-        coordinator._update_state_machine(plugged_in=False, excess_w=5000)
+        coordinator._update_state_machine(plugged_in=False, excess_w=5000, production_w=0.0)
 
         assert coordinator._controller_state == ControllerState.IDLE
 
@@ -484,7 +421,7 @@ class TestStateMachine:
         """Test state is TRACKING when excess solar available."""
         coordinator._mode = Mode.SOLAR_ONLY
         coordinator._master_enabled = True
-        coordinator._update_state_machine(plugged_in=True, excess_w=3000)
+        coordinator._update_state_machine(plugged_in=True, excess_w=3000, production_w=0.0)
 
         assert coordinator._controller_state == ControllerState.TRACKING
 
@@ -494,7 +431,7 @@ class TestStateMachine:
         """Test state is FORCED when mode is Charge Now."""
         coordinator._mode = Mode.CHARGE_NOW
         coordinator._master_enabled = True
-        coordinator._update_state_machine(plugged_in=True, excess_w=0)
+        coordinator._update_state_machine(plugged_in=True, excess_w=0, production_w=0.0)
 
         assert coordinator._controller_state == ControllerState.FORCED
 
@@ -506,10 +443,16 @@ class TestHysteresisTimers:
     def coordinator(
         self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
     ) -> TeslaSolarChargerCoordinator:
-        """Create coordinator instance."""
+        """Create coordinator already in the 'car plugged in' state.
+
+        These tests focus on hysteresis behaviour while plugged in. We mark
+        `_was_plugged_in` True so the state machine doesn't treat the first
+        `plugged_in=True` call as a plug-event (which would clear timers).
+        """
         coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
         coord._mode = Mode.SOLAR_ONLY
         coord._master_enabled = True
+        coord._was_plugged_in = True
         return coord
 
     def test_enters_stopping_state_when_excess_drops(
@@ -520,7 +463,7 @@ class TestHysteresisTimers:
         coordinator._commanded_amps = 10
 
         # Excess drops to 0 - should start stop timer
-        coordinator._update_state_machine(plugged_in=True, excess_w=0)
+        coordinator._update_state_machine(plugged_in=True, excess_w=0, production_w=0.0)
 
         assert coordinator._controller_state == ControllerState.STOPPING
         assert coordinator._stop_timer_start is not None
@@ -533,7 +476,7 @@ class TestHysteresisTimers:
         coordinator._stop_timer_start = time.monotonic()
 
         # Excess recovers
-        coordinator._update_state_machine(plugged_in=True, excess_w=3000)
+        coordinator._update_state_machine(plugged_in=True, excess_w=3000, production_w=0.0)
 
         assert coordinator._controller_state == ControllerState.TRACKING
         assert coordinator._stop_timer_start is None
@@ -549,7 +492,7 @@ class TestHysteresisTimers:
         # Set timer to 7 minutes ago (expired)
         coordinator._stop_timer_start = time.monotonic() - 420
 
-        coordinator._update_state_machine(plugged_in=True, excess_w=0)
+        coordinator._update_state_machine(plugged_in=True, excess_w=0, production_w=0.0)
 
         assert coordinator._controller_state == ControllerState.COOLDOWN
         assert coordinator._cooldown_timer_start is not None
@@ -566,7 +509,7 @@ class TestHysteresisTimers:
         coordinator._cooldown_timer_start = time.monotonic() - 600
 
         # Even with excess available, stays in cooldown
-        coordinator._update_state_machine(plugged_in=True, excess_w=5000)
+        coordinator._update_state_machine(plugged_in=True, excess_w=5000, production_w=0.0)
 
         assert coordinator._controller_state == ControllerState.COOLDOWN
 
@@ -581,7 +524,7 @@ class TestHysteresisTimers:
         # Set cooldown timer to 16 minutes ago (expired)
         coordinator._cooldown_timer_start = time.monotonic() - 960
 
-        coordinator._update_state_machine(plugged_in=True, excess_w=5000)
+        coordinator._update_state_machine(plugged_in=True, excess_w=5000, production_w=0.0)
 
         assert coordinator._controller_state == ControllerState.TRACKING
 
@@ -593,21 +536,34 @@ class TestHysteresisTimers:
         coordinator._cooldown_timer_start = time.monotonic()  # Just started
 
         coordinator._mode = Mode.CHARGE_NOW
-        coordinator._update_state_machine(plugged_in=True, excess_w=0)
+        coordinator._update_state_machine(plugged_in=True, excess_w=0, production_w=0.0)
 
         assert coordinator._controller_state == ControllerState.FORCED
 
-    def test_mode_change_cancels_stop_timer(
+    def test_mode_setter_cancels_stop_timer(
         self, coordinator: TeslaSolarChargerCoordinator
     ):
-        """Test mode change cancels stop timer."""
+        """The mode property setter should clear the stop timer when mode changes."""
         coordinator._controller_state = ControllerState.STOPPING
         coordinator._stop_timer_start = time.monotonic()
 
-        coordinator._mode = Mode.SOLAR_PLUS_GRID
-        coordinator._update_state_machine(plugged_in=True, excess_w=3000)
+        # Use the setter (not direct _mode assignment)
+        coordinator.mode = Mode.SOLAR_PLUS_GRID
 
         assert coordinator._stop_timer_start is None
+
+    def test_mode_setter_no_change_keeps_timer(
+        self, coordinator: TeslaSolarChargerCoordinator
+    ):
+        """Setting the same mode does not reset the stop timer."""
+        coordinator._mode = Mode.SOLAR_ONLY
+        coordinator._controller_state = ControllerState.STOPPING
+        timer_start = time.monotonic()
+        coordinator._stop_timer_start = timer_start
+
+        coordinator.mode = Mode.SOLAR_ONLY  # same mode
+
+        assert coordinator._stop_timer_start == timer_start
 
 
 class TestSendCommands:
@@ -758,19 +714,24 @@ class TestSolarOnlyMode:
         mock_hass: MagicMock,
         mock_config_entry: ConfigEntry
     ):
-        """Test stops charging when excess drops below min_amps threshold."""
-        mock_config_entry.options["min_amps"] = 5  # 5A * 230V = 1150W minimum
+        """Test stops charging when excess drops below min_amps threshold.
+
+        With min_amps=5 and voltage=230, min_charging_w = 1150W.
+        production=1000W, consumption=2000W (includes 1150W EV draw at 5A),
+        excess = 1000 - (2000 - 1150) - 0 = 150W → below 1150W minimum.
+        """
+        mock_config_entry.options["min_amps"] = 5
         coordinator._controller_state = ControllerState.TRACKING
         coordinator._commanded_amps = 5
 
         def get_state(entity_id: str):
             states = {
                 "sensor.solar_production": State(
-                    entity_id, "1500", {"unit_of_measurement": "W"}
+                    entity_id, "1000", {"unit_of_measurement": "W"}
                 ),
                 "sensor.home_consumption": State(
-                    entity_id, "1000", {"unit_of_measurement": "W"}
-                ),  # Only 500W excess - below min
+                    entity_id, "2000", {"unit_of_measurement": "W"}
+                ),
                 "sensor.tesla_charging_state": State(
                     entity_id, "Charging", {}
                 ),
@@ -781,7 +742,8 @@ class TestSolarOnlyMode:
 
         data = await coordinator._async_update_data()
 
-        # Should start stop timer (enter STOPPING state)
+        # excess = 1000 - (2000 - 1150) = 150W, well below 1150W min
+        assert data["excess_w"] == 150.0
         assert data["controller_state"] == ControllerState.STOPPING.value
 
 
@@ -992,25 +954,33 @@ class TestEdgeCases:
         return coord
 
     @pytest.mark.asyncio
-    async def test_holds_amps_when_sensor_unavailable(
+    async def test_holds_amps_when_consumption_unavailable(
         self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
     ):
-        """Test holds commanded amps when sensors become unavailable."""
+        """Hold commanded amps when consumption sensor becomes unavailable.
+
+        Consumption unavailable disables solar tracking; we hold the previously
+        commanded amps rather than dropping to 0. (Production unavailable is
+        treated as 0W and still allows tracking.)
+        """
         coordinator._commanded_amps = 10
         coordinator._controller_state = ControllerState.TRACKING
+        coordinator._was_plugged_in = True
 
         def get_state(entity_id: str):
             if entity_id == "sensor.solar_production":
+                return State(entity_id, "5000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
                 return State(entity_id, STATE_UNAVAILABLE, {"unit_of_measurement": "W"})
             if entity_id == "sensor.tesla_charging_state":
                 return State(entity_id, "Charging", {})
-            return State(entity_id, "1000", {"unit_of_measurement": "W"})
+            return None
 
         mock_hass.states.get = MagicMock(side_effect=get_state)
 
         data = await coordinator._async_update_data()
 
-        # Should hold current amps, not change
+        # Should hold previously commanded amps, not change
         assert data["commanded_amps"] == 10
 
     @pytest.mark.asyncio

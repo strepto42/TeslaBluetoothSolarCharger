@@ -1,5 +1,6 @@
 .idea
 *.iml
 .venv
+.venv-wsl
 
 .claude/settings.local.json

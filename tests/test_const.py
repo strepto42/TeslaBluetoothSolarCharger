@@ -57,7 +57,7 @@ class TestDefaults:
         assert DEFAULT_VOLTAGE == 230
 
     def test_default_update_interval(self):
-        """Test default update interval is 30 seconds."""
+        """Test default update interval is 5 seconds."""
         assert DEFAULT_UPDATE_INTERVAL_SECONDS == 5
 
     def test_default_min_amps(self):

@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, UnitOfPower
@@ -26,9 +26,6 @@ from .const import (
     Mode,
 )
 
-if TYPE_CHECKING:
-    pass
-
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -40,8 +37,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize the coordinator."""
         self.entry = entry
-        self.hass = hass
-        
+
         # Get update interval from options or use default
         update_interval = entry.options.get(
             "update_interval_seconds", DEFAULT_UPDATE_INTERVAL_SECONDS
@@ -144,34 +140,6 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         
         return state.state in IEC_PLUGGED_IN_STATES
 
-    def _compute_excess_w(self) -> float | None:
-        """Compute excess solar power available for charging.
-        
-        Formula (consumption includes charging - default):
-            excess = production - (consumption - current_charge) - margin
-        
-        Formula (consumption excludes charging):
-            excess = production - consumption - margin
-        
-        Returns None if any required sensor is unavailable.
-        """
-        # Read production
-        production_entity = self.entry.data.get("production_sensor")
-        production_w = self._read_power_w(production_entity)
-        if production_w is None:
-            return None
-        
-        # Read and sum consumption
-        consumption_entities = self.entry.data.get("consumption_sensors", [])
-        total_consumption_w = 0.0
-        for entity_id in consumption_entities:
-            consumption_w = self._read_power_w(entity_id)
-            if consumption_w is None:
-                return None
-            total_consumption_w += consumption_w
-        
-        return self._compute_excess_w_with_values(production_w, total_consumption_w)
-
     def _compute_excess_w_with_values(
         self, production_w: float, consumption_w: float | None
     ) -> float | None:
@@ -209,46 +177,41 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _compute_target_amps(self, excess_w: float) -> int:
         """Compute target charging amps from excess watts.
-        
-        Returns floor(excess_w / voltage), clamped to [0, max_amps].
-        Note: min_amps clamping is handled by the state machine.
+
+        Returns floor(excess_w / voltage), clamped to [min_amps, max_amps].
+        Zero/negative excess returns 0 to signal "stop charging" rather than
+        clamping up to min_amps.
         """
         if excess_w <= 0:
             return 0
-        
-        voltage = self.entry.data.get("voltage", DEFAULT_VOLTAGE)
-        max_amps = int(self._get_config_value("max_amps", DEFAULT_MAX_AMPS))
-        
-        target = int(excess_w // voltage)
-        return min(target, max_amps)
 
-    def _should_charge_at_minimum(self, production_w: float) -> bool:
-        """Check if we should charge at minimum amps (Solar + Grid mode).
-        
-        Returns True if production is above min_solar_generation threshold.
-        """
-        min_solar_generation = self._get_config_value(
-            "min_solar_generation_w", DEFAULT_MIN_SOLAR_GENERATION_W
-        )
-        return production_w >= min_solar_generation
+        voltage = self.entry.data.get("voltage", DEFAULT_VOLTAGE)
+        min_amps = int(self._get_config_value("min_amps", DEFAULT_MIN_AMPS))
+        max_amps = int(self._get_config_value("max_amps", DEFAULT_MAX_AMPS))
+
+        target = int(excess_w // voltage)
+        return max(min_amps, min(target, max_amps))
 
     def _update_state_machine(
-        self, plugged_in: bool, excess_w: float | None
+        self,
+        plugged_in: bool,
+        excess_w: float | None,
+        production_w: float,
     ) -> None:
         """Update controller state machine.
-        
-        Handles transitions between DISABLED, IDLE, TRACKING, STOPPING, 
+
+        Handles transitions between DISABLED, IDLE, TRACKING, STOPPING,
         COOLDOWN, and FORCED states based on current conditions.
         """
         now = time.monotonic()
-        
+
         # Check for plug state changes (resets timers)
         if plugged_in != self._was_plugged_in:
             _LOGGER.debug("Plug state changed: %s -> %s", self._was_plugged_in, plugged_in)
             self._stop_timer_start = None
             self._cooldown_timer_start = None
             self._was_plugged_in = plugged_in
-        
+
         # Get timing config
         stop_delay = self._get_config_value(
             "stop_delay_seconds", DEFAULT_STOP_DELAY_SECONDS
@@ -259,27 +222,27 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         min_amps = int(self._get_config_value("min_amps", DEFAULT_MIN_AMPS))
         voltage = self.entry.data.get("voltage", DEFAULT_VOLTAGE)
         min_charging_w = min_amps * voltage
-        
+
         # DISABLED: Mode is Off or master disabled
         if self._mode == Mode.OFF or not self._master_enabled:
             self._controller_state = ControllerState.DISABLED
             self._stop_timer_start = None
             return
-        
+
         # FORCED: Charge Now mode (bypasses all timers)
         if self._mode == Mode.CHARGE_NOW:
             self._controller_state = ControllerState.FORCED
             self._stop_timer_start = None
             self._cooldown_timer_start = None
             return
-        
+
         # IDLE: Not plugged in
         if not plugged_in:
             self._controller_state = ControllerState.IDLE
             self._stop_timer_start = None
             self._cooldown_timer_start = None
             return
-        
+
         # Handle COOLDOWN state
         if self._controller_state == ControllerState.COOLDOWN:
             if self._cooldown_timer_start is not None:
@@ -297,10 +260,6 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._controller_state = ControllerState.IDLE
             return
 
-        # Check production for Solar + Grid mode minimum threshold
-        production_entity = self.entry.data.get("production_sensor")
-        production_w = self._read_power_w(production_entity) or 0.0
-        
         if self._mode == Mode.SOLAR_PLUS_GRID:
             min_solar_generation = self._get_config_value(
                 "min_solar_generation_w", DEFAULT_MIN_SOLAR_GENERATION_W
@@ -507,26 +466,25 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._sensor_unavailable_logged = False
         
         # ALWAYS update state machine - Charge Now and Off modes don't need sensors
-        self._update_state_machine(plugged_in, excess_w)
-        
+        self._update_state_machine(plugged_in, excess_w, production_w)
+
         # Compute target amps based on state
         target_amps = 0
         min_amps = int(self._get_config_value("min_amps", DEFAULT_MIN_AMPS))
         max_amps = int(self._get_config_value("max_amps", DEFAULT_MAX_AMPS))
-        
+
         if self._controller_state == ControllerState.FORCED:
             # Charge Now - always charge at max, regardless of sensors
             target_amps = max_amps
             _LOGGER.debug("FORCED mode: target_amps=%d", target_amps)
         elif self._controller_state == ControllerState.TRACKING:
             if sensors_available and excess_w is not None:
-                target_amps = self._compute_target_amps(excess_w)
-                # Apply minimum in Solar + Grid mode
-                if self._mode == Mode.SOLAR_PLUS_GRID and target_amps < min_amps:
-                    target_amps = min_amps
-                # Clamp to configured range
-                if target_amps > 0:
-                    target_amps = max(min_amps, min(target_amps, max_amps))
+                if self._mode == Mode.SOLAR_PLUS_GRID:
+                    # Floor at min_amps regardless of how low excess is, since
+                    # the grid will supplement.
+                    target_amps = max(min_amps, self._compute_target_amps(excess_w))
+                else:
+                    target_amps = self._compute_target_amps(excess_w)
             else:
                 # Sensors unavailable during TRACKING - hold current amps
                 target_amps = self._commanded_amps or 0

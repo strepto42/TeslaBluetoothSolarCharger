@@ -212,9 +212,19 @@ class TestOptionsFlow:
     def options_flow(
         self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
     ) -> TeslaSolarChargerOptionsFlow:
-        """Create an options flow instance."""
-        flow = TeslaSolarChargerOptionsFlow(mock_config_entry)
+        """Create an options flow instance.
+
+        Modern HA's OptionsFlow takes no constructor args; the `config_entry`
+        property looks up `hass.config_entries.async_get_known_entry(handler)`,
+        where `handler` is set to the entry_id by the framework. We replicate
+        that wiring on the mock.
+        """
+        flow = TeslaSolarChargerOptionsFlow()
         flow.hass = mock_hass
+        flow.handler = mock_config_entry.entry_id
+        mock_hass.config_entries.async_get_known_entry = MagicMock(
+            return_value=mock_config_entry
+        )
         return flow
 
     @pytest.mark.asyncio
