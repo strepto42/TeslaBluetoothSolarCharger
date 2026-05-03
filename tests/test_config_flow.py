@@ -241,8 +241,11 @@ class TestOptionsFlow:
     async def test_options_includes_timing_settings(
         self, options_flow: TeslaSolarChargerOptionsFlow
     ):
-        """Test options flow includes timing settings not in initial config."""
-        # These settings should be available in options but not initial config
+        """Options flow accepts entity bindings + timing settings.
+
+        min_amps/max_amps/margin_w are NOT in the options flow — they're
+        controlled by NumberEntity widgets on the dashboard.
+        """
         user_input = {
             "name": "Tesla Solar Charger",
             "production_sensor": "sensor.solar_production",
@@ -252,18 +255,103 @@ class TestOptionsFlow:
             "charging_switch": "switch.tesla_charging",
             "charging_state_sensor": "sensor.tesla_charging_state",
             "voltage": 230,
-            "update_interval_seconds": 60,  # Changed from default 30
-            "min_amps": 6,  # Changed from default 5
-            "max_amps": 16,  # Changed from default 32
-            "margin_w": 100,  # Changed from default 0
-            "min_solar_generation_w": 300,  # Changed from default 200
-            "stop_delay_seconds": 480,  # Changed from default 360
-            "restart_delay_seconds": 1200,  # Changed from default 900
+            "update_interval_seconds": 60,
+            "min_solar_generation_w": 300,
+            "stop_delay_seconds": 480,
+            "restart_delay_seconds": 1200,
         }
 
         result = await options_flow.async_step_init(user_input=user_input)
 
         assert result["type"] == FlowResultType.CREATE_ENTRY
+
+    @pytest.mark.asyncio
+    async def test_options_save_separates_data_and_options(
+        self, options_flow: TeslaSolarChargerOptionsFlow,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """Entity bindings save to entry.data; timing tunables save to entry.options."""
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+            "update_interval_seconds": 60,
+            "min_solar_generation_w": 300,
+            "stop_delay_seconds": 480,
+            "restart_delay_seconds": 1200,
+        }
+
+        await options_flow.async_step_init(user_input=user_input)
+
+        call = mock_hass.config_entries.async_update_entry.call_args
+        saved_data = call.kwargs["data"]
+        saved_options = call.kwargs["options"]
+
+        # Bindings live in data
+        assert saved_data["production_sensor"] == "sensor.solar_production"
+        assert saved_data["amps_number"] == "number.tesla_charging_amps"
+        assert saved_data["voltage"] == 230
+        # Timing tunables do not leak into data
+        assert "update_interval_seconds" not in saved_data
+        assert "stop_delay_seconds" not in saved_data
+        # Tunables live in options
+        assert saved_options["update_interval_seconds"] == 60
+        assert saved_options["min_solar_generation_w"] == 300
+        assert saved_options["stop_delay_seconds"] == 480
+        assert saved_options["restart_delay_seconds"] == 1200
+        # Bindings do not leak into options
+        assert "production_sensor" not in saved_options
+        assert "amps_number" not in saved_options
+
+    @pytest.mark.asyncio
+    async def test_options_save_preserves_number_entity_settings(
+        self, options_flow: TeslaSolarChargerOptionsFlow,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """Saving the options flow must not clobber options written by NumberEntity widgets.
+
+        min_amps/max_amps/margin_w are written to entry.options by the
+        dashboard NumberEntity setters. The options flow does not expose
+        them, but saving the flow must preserve them.
+        """
+        # Pretend the user previously tuned min_amps via the dashboard widget
+        mock_config_entry.options = {
+            **mock_config_entry.options,
+            "min_amps": 8,
+            "max_amps": 24,
+            "margin_w": 250,
+        }
+
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+            "update_interval_seconds": 60,
+            "min_solar_generation_w": 300,
+            "stop_delay_seconds": 480,
+            "restart_delay_seconds": 1200,
+        }
+
+        await options_flow.async_step_init(user_input=user_input)
+
+        saved_options = mock_hass.config_entries.async_update_entry.call_args.kwargs[
+            "options"
+        ]
+        assert saved_options["min_amps"] == 8
+        assert saved_options["max_amps"] == 24
+        assert saved_options["margin_w"] == 250
 
     @pytest.mark.asyncio
     async def test_options_validates_power_sensors(

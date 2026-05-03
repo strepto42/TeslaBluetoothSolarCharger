@@ -49,9 +49,6 @@
           "charging_state_sensor": "Charging State Sensor",
           "voltage": "Grid Voltage",
           "update_interval_seconds": "Update Interval",
-          "min_amps": "Minimum Charging Amps",
-          "max_amps": "Maximum Charging Amps",
-          "margin_w": "Solar Tracking Margin",
           "min_solar_generation_w": "Minimum Solar Generation",
           "stop_delay_seconds": "Stop Delay",
           "restart_delay_seconds": "Restart Cooldown"
@@ -66,9 +63,6 @@
           "charging_state_sensor": "The IEC 61851 state sensor from the BLE proxy.",
           "voltage": "Your local grid voltage (230V EU, 240V UK, 120V US). Used for watts/amps conversion.",
           "update_interval_seconds": "How often to recalculate excess solar and adjust charging (5-300 seconds). Lower = more responsive but more commands sent to car.",
-          "min_amps": "Minimum charging amperage (1-32A). Tesla's minimum is typically 5A. Charging stops if excess drops below this × voltage.",
-          "max_amps": "Maximum charging amperage (1-32A). Limits how fast the car will charge even with abundant solar.",
-          "margin_w": "Buffer watts subtracted from excess before calculating amps (-5000 to 5000W). Positive values leave headroom, negative values allow slight grid import.",
           "min_solar_generation_w": "Solar production threshold (0-10000W). Below this, Solar+Grid mode stops charging. Prevents charging at night or with minimal solar.",
           "stop_delay_seconds": "Seconds to wait before stopping charge when excess drops below minimum (0-3600). Default 360s (6 min). Prevents rapid on/off cycling during brief cloud cover.",
           "restart_delay_seconds": "Cooldown seconds after stopping before charging can restart (0-7200). Default 900s (15 min). Reduces Tesla contactor wear from frequent start/stop cycles."
