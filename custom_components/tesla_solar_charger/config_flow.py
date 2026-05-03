@@ -17,6 +17,11 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector
 
 from .const import (
+    BATTERY_PRIORITY_LIMIT_MAX,
+    BATTERY_PRIORITY_LIMIT_MIN,
+    BATTERY_PRIORITY_STYLES,
+    DEFAULT_BATTERY_PRIORITY_CHARGE_LIMIT_PCT,
+    DEFAULT_BATTERY_PRIORITY_STYLE,
     DEFAULT_MIN_SOLAR_GENERATION_W,
     DEFAULT_NAME,
     DEFAULT_RESTART_DELAY_SECONDS,
@@ -36,6 +41,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # Valid power units accepted by the production/consumption sensor validators.
 VALID_POWER_UNITS = {UnitOfPower.WATT, UnitOfPower.KILO_WATT, "W", "kW"}
+VALID_BATTERY_SOC_UNITS = {"%"}
 
 # Fields that bind to upstream entities or hardware identity. These are stored
 # in entry.data and survive across options-flow saves.
@@ -49,6 +55,9 @@ DATA_FIELDS: frozenset[str] = frozenset(
         "charging_switch",
         "charging_state_sensor",
         "voltage",
+        "battery_power_sensor",
+        "battery_soc_sensor",
+        "battery_power_positive_is_charging",
     }
 )
 
@@ -61,6 +70,8 @@ OPTIONS_FIELDS: frozenset[str] = frozenset(
         "min_solar_generation_w",
         "stop_delay_seconds",
         "restart_delay_seconds",
+        "battery_priority_charge_limit_pct",
+        "battery_priority_style",
     }
 )
 
@@ -71,6 +82,14 @@ def _validate_power_sensor(hass: HomeAssistant, entity_id: str) -> bool:
     if state is None:
         return False
     return state.attributes.get("unit_of_measurement") in VALID_POWER_UNITS
+
+
+def _validate_battery_soc_sensor(hass: HomeAssistant, entity_id: str) -> bool:
+    """Return True if `entity_id` exists and reports in %."""
+    state = hass.states.get(entity_id)
+    if state is None:
+        return False
+    return state.attributes.get("unit_of_measurement") in VALID_BATTERY_SOC_UNITS
 
 
 def _validate_user_input(
@@ -90,6 +109,21 @@ def _validate_user_input(
             if not _validate_power_sensor(hass, sensor_id):
                 errors["consumption_sensors"] = "invalid_power_unit"
                 break
+
+    # Battery sensors are optional but all-or-nothing: setting one without
+    # the other is rejected. When both are set, validate units (W/kW for
+    # power, % for SoC).
+    battery_power = user_input.get("battery_power_sensor") or None
+    battery_soc = user_input.get("battery_soc_sensor") or None
+    if battery_power and not battery_soc:
+        errors["battery_soc_sensor"] = "battery_pair_incomplete"
+    elif battery_soc and not battery_power:
+        errors["battery_power_sensor"] = "battery_pair_incomplete"
+    elif battery_power and battery_soc:
+        if not _validate_power_sensor(hass, battery_power):
+            errors["battery_power_sensor"] = "invalid_power_unit"
+        if not _validate_battery_soc_sensor(hass, battery_soc):
+            errors["battery_soc_sensor"] = "invalid_battery_soc_unit"
 
     return errors
 
@@ -153,6 +187,22 @@ def _bindings_schema(defaults: dict[str, Any]) -> dict[Any, Any]:
                 mode=selector.NumberSelectorMode.BOX,
             )
         ),
+        vol.Optional(
+            "battery_power_sensor",
+            description={"suggested_value": defaults.get("battery_power_sensor")},
+        ): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor", device_class="power")
+        ),
+        vol.Optional(
+            "battery_soc_sensor",
+            description={"suggested_value": defaults.get("battery_soc_sensor")},
+        ): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor", device_class="battery")
+        ),
+        vol.Required(
+            "battery_power_positive_is_charging",
+            default=defaults.get("battery_power_positive_is_charging", True),
+        ): selector.BooleanSelector(),
     }
 
 
@@ -211,6 +261,33 @@ def _timing_schema(defaults: dict[str, Any]) -> dict[Any, Any]:
                 step=1,
                 unit_of_measurement="s",
                 mode=selector.NumberSelectorMode.BOX,
+            )
+        ),
+        vol.Required(
+            "battery_priority_charge_limit_pct",
+            default=defaults.get(
+                "battery_priority_charge_limit_pct",
+                DEFAULT_BATTERY_PRIORITY_CHARGE_LIMIT_PCT,
+            ),
+        ): selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=BATTERY_PRIORITY_LIMIT_MIN,
+                max=BATTERY_PRIORITY_LIMIT_MAX,
+                step=1,
+                unit_of_measurement="%",
+                mode=selector.NumberSelectorMode.BOX,
+            )
+        ),
+        vol.Required(
+            "battery_priority_style",
+            default=defaults.get(
+                "battery_priority_style", DEFAULT_BATTERY_PRIORITY_STYLE
+            ),
+        ): selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=list(BATTERY_PRIORITY_STYLES),
+                translation_key="battery_priority_style",
+                mode=selector.SelectSelectorMode.DROPDOWN,
             )
         ),
     }

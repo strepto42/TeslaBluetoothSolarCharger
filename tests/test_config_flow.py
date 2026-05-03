@@ -385,3 +385,257 @@ class TestOptionsFlow:
         assert result["type"] == FlowResultType.FORM
         assert "production_sensor" in result["errors"]
 
+
+def _valid_battery_sensors_state(entity_id: str) -> State | None:
+    """States for a fully-valid setup with battery sensors."""
+    matrix = {
+        "sensor.solar_production": ("3000", "W"),
+        "sensor.home_consumption": ("1500", "W"),
+        "sensor.battery_power": ("500", "W"),
+        "sensor.battery_soc": ("75", "%"),
+    }
+    if entity_id in matrix:
+        value, unit = matrix[entity_id]
+        return State(entity_id, value, {"unit_of_measurement": unit})
+    return None
+
+
+class TestBatteryAwarenessConfigFlow:
+    """Tests for the new battery-aware config-flow fields."""
+
+    @pytest.fixture
+    def flow(self, mock_hass: MagicMock) -> TeslaSolarChargerConfigFlow:
+        flow = TeslaSolarChargerConfigFlow()
+        flow.hass = mock_hass
+        return flow
+
+    @pytest.fixture
+    def options_flow(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ) -> TeslaSolarChargerOptionsFlow:
+        flow = TeslaSolarChargerOptionsFlow()
+        flow.hass = mock_hass
+        flow.handler = mock_config_entry.entry_id
+        mock_hass.config_entries.async_get_known_entry = MagicMock(
+            return_value=mock_config_entry
+        )
+        return flow
+
+    @pytest.mark.asyncio
+    async def test_accepts_battery_sensor_pair(
+        self, flow: TeslaSolarChargerConfigFlow, mock_hass: MagicMock
+    ):
+        """Both battery sensors set, both valid units → entry created."""
+        mock_hass.states.get = MagicMock(side_effect=_valid_battery_sensors_state)
+
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+            "battery_power_sensor": "sensor.battery_power",
+            "battery_soc_sensor": "sensor.battery_soc",
+            "battery_power_positive_is_charging": True,
+        }
+
+        result = await flow.async_step_user(user_input=user_input)
+
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert result["data"]["battery_power_sensor"] == "sensor.battery_power"
+        assert result["data"]["battery_soc_sensor"] == "sensor.battery_soc"
+
+    @pytest.mark.asyncio
+    async def test_accepts_no_battery_sensors(
+        self, flow: TeslaSolarChargerConfigFlow, mock_hass: MagicMock
+    ):
+        """Neither battery sensor set → entry created (battery awareness off)."""
+        def get_state(entity_id: str):
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "3000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "1500", {"unit_of_measurement": "W"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+        }
+
+        result = await flow.async_step_user(user_input=user_input)
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+
+    @pytest.mark.asyncio
+    async def test_rejects_only_power_sensor_set(
+        self, flow: TeslaSolarChargerConfigFlow, mock_hass: MagicMock
+    ):
+        """Power set without SoC → battery_pair_incomplete error."""
+        mock_hass.states.get = MagicMock(side_effect=_valid_battery_sensors_state)
+
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+            "battery_power_sensor": "sensor.battery_power",
+            # battery_soc_sensor intentionally missing
+        }
+
+        result = await flow.async_step_user(user_input=user_input)
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"].get("battery_soc_sensor") == "battery_pair_incomplete"
+
+    @pytest.mark.asyncio
+    async def test_rejects_only_soc_sensor_set(
+        self, flow: TeslaSolarChargerConfigFlow, mock_hass: MagicMock
+    ):
+        """SoC set without power → battery_pair_incomplete error."""
+        mock_hass.states.get = MagicMock(side_effect=_valid_battery_sensors_state)
+
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+            "battery_soc_sensor": "sensor.battery_soc",
+            # battery_power_sensor intentionally missing
+        }
+
+        result = await flow.async_step_user(user_input=user_input)
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"].get("battery_power_sensor") == "battery_pair_incomplete"
+
+    @pytest.mark.asyncio
+    async def test_rejects_battery_power_sensor_with_wrong_unit(
+        self, flow: TeslaSolarChargerConfigFlow, mock_hass: MagicMock
+    ):
+        """Battery power sensor must be W or kW."""
+        def get_state(entity_id: str):
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "3000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "1500", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.battery_power":
+                # wrong unit (volts instead of watts)
+                return State(entity_id, "500", {"unit_of_measurement": "V"})
+            if entity_id == "sensor.battery_soc":
+                return State(entity_id, "75", {"unit_of_measurement": "%"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+            "battery_power_sensor": "sensor.battery_power",
+            "battery_soc_sensor": "sensor.battery_soc",
+        }
+
+        result = await flow.async_step_user(user_input=user_input)
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"].get("battery_power_sensor") == "invalid_power_unit"
+
+    @pytest.mark.asyncio
+    async def test_rejects_battery_soc_sensor_with_wrong_unit(
+        self, flow: TeslaSolarChargerConfigFlow, mock_hass: MagicMock
+    ):
+        """Battery SoC sensor must report in %."""
+        def get_state(entity_id: str):
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "3000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "1500", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.battery_power":
+                return State(entity_id, "500", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.battery_soc":
+                # wrong unit
+                return State(entity_id, "75", {"unit_of_measurement": "kWh"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+            "battery_power_sensor": "sensor.battery_power",
+            "battery_soc_sensor": "sensor.battery_soc",
+        }
+
+        result = await flow.async_step_user(user_input=user_input)
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"].get("battery_soc_sensor") == "invalid_battery_soc_unit"
+
+    @pytest.mark.asyncio
+    async def test_options_flow_saves_battery_settings(
+        self,
+        options_flow: TeslaSolarChargerOptionsFlow,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """Battery sensors save to entry.data; reserve & style save to entry.options."""
+        mock_hass.states.get = MagicMock(side_effect=_valid_battery_sensors_state)
+
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+            "battery_power_sensor": "sensor.battery_power",
+            "battery_soc_sensor": "sensor.battery_soc",
+            "battery_power_positive_is_charging": False,
+            "update_interval_seconds": 60,
+            "min_solar_generation_w": 300,
+            "stop_delay_seconds": 480,
+            "restart_delay_seconds": 1200,
+            "battery_priority_charge_limit_pct": 70,
+            "battery_priority_style": "graduated",
+        }
+
+        await options_flow.async_step_init(user_input=user_input)
+
+        call = mock_hass.config_entries.async_update_entry.call_args
+        saved_data = call.kwargs["data"]
+        saved_options = call.kwargs["options"]
+
+        assert saved_data["battery_power_sensor"] == "sensor.battery_power"
+        assert saved_data["battery_soc_sensor"] == "sensor.battery_soc"
+        assert saved_data["battery_power_positive_is_charging"] is False
+
+        assert saved_options["battery_priority_charge_limit_pct"] == 70
+        assert saved_options["battery_priority_style"] == "graduated"
+
