@@ -65,7 +65,7 @@
           "charging_switch": "The ESPHome BLE proxy's charging switch entity.",
           "charging_state_sensor": "The IEC 61851 state sensor from the BLE proxy.",
           "voltage": "Your local grid voltage (230V EU, 240V UK, 120V US). Used for watts/amps conversion.",
-          "update_interval_seconds": "How often to recalculate excess solar and adjust charging (10-300 seconds). Lower = more responsive but more commands sent to car.",
+          "update_interval_seconds": "How often to recalculate excess solar and adjust charging (5-300 seconds). Lower = more responsive but more commands sent to car.",
           "min_amps": "Minimum charging amperage (1-32A). Tesla's minimum is typically 5A. Charging stops if excess drops below this × voltage.",
           "max_amps": "Maximum charging amperage (1-32A). Limits how fast the car will charge even with abundant solar.",
           "margin_w": "Buffer watts subtracted from excess before calculating amps (-5000 to 5000W). Positive values leave headroom, negative values allow slight grid import.",

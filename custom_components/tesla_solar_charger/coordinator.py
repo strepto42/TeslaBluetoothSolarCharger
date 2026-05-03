@@ -55,7 +55,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
         # Initialize state
-        self._mode: Mode = Mode.OFF
+        self._mode: Mode = Mode.SOLAR_ONLY
         self._master_enabled: bool = True
         self._controller_state: ControllerState = ControllerState.IDLE
         self._commanded_amps: int | None = None
