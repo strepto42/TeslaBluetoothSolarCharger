@@ -4,6 +4,5 @@
 .venv-wsl
 __pycache__/
 *.pyc
-todo.md
 
 .claude/settings.local.json
