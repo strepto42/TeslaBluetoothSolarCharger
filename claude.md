@@ -1,7 +1,6 @@
 # CLAUDE.md
 
-This file gives Claude Code persistent context for this project. Read it first
-on every session.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project: Tesla Solar Charger
 
@@ -14,6 +13,57 @@ The behaviour mirrors a small, well-defined subset of ChargeHQ
 (<https://chargehq.net/features>). Where a behaviour is described below,
 ChargeHQ's documented behaviour is the source of truth — do not invent
 variations.
+
+## Commands
+
+```bash
+# Install test dependencies
+pip install -r requirements_test.txt
+
+# Run all tests
+pytest
+
+# Run a single test file
+pytest tests/test_coordinator.py -v
+
+# Run a single test by name
+pytest tests/test_coordinator.py::test_name -v
+
+# Validate the integration (requires homeassistant installed)
+python -m homeassistant --script check_config
+```
+
+There is no build step. The integration is loaded directly by Home Assistant.
+
+## Workflow rules (hard, non-negotiable)
+
+These rules govern *how* work is done in this repo. They override default behaviour.
+
+1. **Test-Driven Development.** Always write a meaningful, failing test before
+   implementing a feature or fix. The test must exercise the actual behaviour
+   under change — not a tautology. Run it and confirm it fails for the right
+   reason before writing implementation code.
+2. **Four-step workflow. Stop and wait for user confirmation at each step.**
+   - **a) Understand** — Restate the problem in your own words. Ask the user
+     to clarify anything ambiguous before proceeding. Do not move on until
+     the user confirms the understanding is correct.
+   - **b) Propose** — Present a detailed outline of the work: files to
+     change, approach, edge cases, test strategy. Wait for user feedback and
+     approval.
+   - **c) Tests** — Write the failing tests aligned with the proposed design.
+     Run them to demonstrate they fail. Show the user the failure output.
+     Wait for confirmation before implementing.
+   - **d) Implement** — Make the code changes. Run the tests to confirm they
+     now pass. Stop for review. Do not bundle additional changes or "while
+     I'm here" cleanups into this step.
+3. **Never push to GitHub without explicit user permission.** This is a hard
+   rule with no exceptions. `git push` (and `gh pr create`, `gh pr merge`,
+   force-pushes, etc.) require an explicit instruction from the user in the
+   current conversation. Prior approval does not carry forward.
+4. **Never modify a test to make code pass.** If a test fails, fix the
+   production code or — if the test itself is genuinely wrong — stop and
+   discuss it with the user before changing the test. The arrow always
+   points from test → code, never the reverse.
 
 ## Hard constraints
 
@@ -115,19 +165,16 @@ plug events.
 
 ## Architecture
 
-- A single `DataUpdateCoordinator` runs the control loop. It polls every
-  `update_interval` seconds, reads the configured input sensors via
-  `hass.states.get`, computes the next action, and issues service calls
-  (`number.set_value`, `switch.turn_on`, `switch.turn_off`) on the upstream
-  ESPHome entities.
-- Commands are only sent when the desired value differs from the last
-  commanded value (debounce by exact equality on amps, by state on switch).
-  This avoids flooding the BLE link.
-- The integration's own entities (mode `select`, settings `number`s,
-  diagnostic `sensor`s, master `switch`) are all backed by the coordinator's
-  data dict. They never talk to the upstream BLE proxy directly.
-- All blocking work goes through `hass.async_add_executor_job` if needed.
-  There should be very little blocking work — this is a pure control loop.
+`TeslaSolarChargerCoordinator` in `coordinator.py` is the heart of the integration. On each poll (`_async_update_data`):
+
+1. Read `production_w` and `consumption_w` from configured sensor entity IDs via `hass.states.get`. Production unavailable → treat as 0 W. Consumption unavailable → solar tracking disabled (Charge Now / Off still work).
+2. Compute `excess_w` using `_compute_excess_w_with_values`. The formula accounts for whether the consumption sensor already includes the EV draw.
+3. Advance the state machine (`_update_state_machine`): `DISABLED → IDLE → TRACKING → STOPPING → COOLDOWN → FORCED`. Hysteresis timers use `time.monotonic()` stored in `_stop_timer_start` / `_cooldown_timer_start`; they reset on plug events and mode changes.
+4. Compute `target_amps = floor(excess_w / voltage)`, clamped to `[min_amps, max_amps]`.
+5. Issue `number.set_value` / `switch.turn_on` / `switch.turn_off` service calls via `hass.services.async_call` — **only when the value differs from the last commanded value** (debounce). This protects the BLE link from flooding.
+6. Return a `dict[str, Any]` snapshot; all platform entities (`select.py`, `number.py`, `switch.py`, `sensor.py`) read from this dict and never call services directly.
+
+Config/options flow (`config_flow.py`) stores all upstream entity IDs in `entry.data`. Options (intervals, amps limits, margin) are in `entry.options`. The coordinator reads both via `_get_config_value`.
 
 ## File layout
 
@@ -177,6 +224,16 @@ README.md
   poll cycle, except for the documented 6 / 15 minute hysteresis windows.
 - Unplugging the car returns the state machine to `IDLE` and stops issuing
   commands.
+
+## Testing
+
+Tests use `pytest-homeassistant-custom-component`. `pytest.ini` sets `asyncio_mode = auto` so async test functions run without `@pytest.mark.asyncio`.
+
+`tests/conftest.py` provides two key fixtures:
+- `mock_hass` — a `MagicMock(spec=HomeAssistant)` with `hass.services.async_call` as an `AsyncMock` and `hass.states.get` returning preconfigured sensor states.
+- `mock_config_entry` — a `MagicMock(spec=ConfigEntry)` with realistic `entry.data` / `entry.options`.
+
+Most coordinator tests instantiate `TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)` directly and call `await coordinator._async_update_data()` to exercise the control loop without a running Home Assistant instance.
 
 ## Things to ask the user about, not assume
 
