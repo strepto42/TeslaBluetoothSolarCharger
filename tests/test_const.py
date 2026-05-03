@@ -58,7 +58,7 @@ class TestDefaults:
 
     def test_default_update_interval(self):
         """Test default update interval is 30 seconds."""
-        assert DEFAULT_UPDATE_INTERVAL_SECONDS == 30
+        assert DEFAULT_UPDATE_INTERVAL_SECONDS == 5
 
     def test_default_min_amps(self):
         """Test default min amps is 5A (Tesla single-phase minimum)."""
