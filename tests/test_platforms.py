@@ -304,6 +304,57 @@ class TestBinarySensors:
         assert sensor.is_on is None
 
 
+class TestBatteryDiagnosticEntities:
+    """Battery awareness exposes three diagnostic entities."""
+
+    @pytest.mark.asyncio
+    async def test_battery_power_sensor(self, mock_hass: MagicMock):
+        from custom_components.tesla_solar_charger.sensor import (
+            TeslaSolarChargerBatteryPowerSensor,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {"battery_power_w": 1500.0}
+        entry = MagicMock()
+        entry.entry_id = "test"
+
+        sensor = TeslaSolarChargerBatteryPowerSensor(coordinator, entry)
+        assert sensor.native_value == 1500.0
+        assert sensor.native_unit_of_measurement == "W"
+
+    @pytest.mark.asyncio
+    async def test_battery_soc_sensor(self, mock_hass: MagicMock):
+        from custom_components.tesla_solar_charger.sensor import (
+            TeslaSolarChargerBatterySocSensor,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {"battery_soc_pct": 75.0}
+        entry = MagicMock()
+        entry.entry_id = "test"
+
+        sensor = TeslaSolarChargerBatterySocSensor(coordinator, entry)
+        assert sensor.native_value == 75.0
+        assert sensor.native_unit_of_measurement == "%"
+
+    @pytest.mark.asyncio
+    async def test_battery_priority_binary_sensor(self, mock_hass: MagicMock):
+        from custom_components.tesla_solar_charger.binary_sensor import (
+            TeslaSolarChargerBatteryPriorityBinarySensor,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {"battery_priority_active": True}
+        entry = MagicMock()
+        entry.entry_id = "test"
+
+        sensor = TeslaSolarChargerBatteryPriorityBinarySensor(coordinator, entry)
+        assert sensor.is_on is True
+
+        coordinator.data = {"battery_priority_active": False}
+        assert sensor.is_on is False
+
+
 class TestSensorPlatformDoesNotExposeBooleanSensors:
     """The sensor platform should no longer export plugged_in/is_charging/last_command."""
 

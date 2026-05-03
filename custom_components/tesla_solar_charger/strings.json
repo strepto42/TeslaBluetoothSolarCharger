@@ -148,6 +148,12 @@
       },
       "diagnostics": {
         "name": "Diagnostics"
+      },
+      "battery_power": {
+        "name": "Home Battery Power"
+      },
+      "battery_soc": {
+        "name": "Home Battery State of Charge"
       }
     },
     "binary_sensor": {
@@ -159,6 +165,9 @@
       },
       "last_command_succeeded": {
         "name": "Last Command Succeeded"
+      },
+      "battery_priority_active": {
+        "name": "Battery Priority Active"
       }
     }
   }

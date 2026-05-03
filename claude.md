@@ -68,9 +68,10 @@ These rules govern *how* work is done in this repo. They override default behavi
 ## Hard constraints
 
 - **Do not invent features.** If a requirement is not in this file or in the
-  build prompt, ask before adding it. The user has explicitly excluded home
-  battery priority, scheduled charging, multi-vehicle support, and three-phase
-  charging from the MVP. Do not silently add them.
+  build prompt, ask before adding it. The user has explicitly excluded
+  scheduled charging, multi-vehicle support, and three-phase charging
+  from the MVP. Do not silently add them. Home battery awareness *is*
+  in scope — see "Battery awareness" below.
 - **Do not hardcode entity IDs.** All upstream entity IDs (the ESPHome BLE
   proxy's amps number, charging switch, charging state sensor, the user's
   production and consumption sensors) are configured by the user via the
@@ -80,6 +81,8 @@ These rules govern *how* work is done in this repo. They override default behavi
 - **Treat the BLE link as unreliable.** Commands may fail. Sensors may go
   unavailable. The integration must keep working (idle, not crash) when the
   car is asleep, out of BLE range, or the proxy is offline.
+- **No self-references or unnecessary documentation.** Do not reference Claude in commit messages.
+  Do not create unnecessary markdown files when making changes.
 
 ## Upstream dependencies (read-only references)
 
@@ -116,6 +119,18 @@ These rules govern *how* work is done in this repo. They override default behavi
     charging stops in either mode
   - **Solar Tracking Margin**: `charging_power = available_solar - margin`
     (margin in watts, can be negative to allow grid import)
+  - **Battery awareness (optional)**: when a battery power and SoC sensor
+    pair are configured, the integration mirrors ChargeHQ's
+    home-battery-charge-priority-limit-configuration behaviour:
+    *"Once the limit is reached, all excess solar will be used for EV
+    charging."* Below the configured `battery_priority_charge_limit_pct`,
+    the home battery has priority and excess is gated to zero (state
+    machine drops the EV to STOPPING through normal hysteresis). At/above
+    the limit, the existing excess formula runs unchanged.
+    Two styles are exposed: **hard_cutoff** (the strict ChargeHQ
+    behaviour) and **graduated** (a known-good local automation's curve
+    that tapers EV deduction in 5 % SoC bands above the limit, gentler
+    on contactor wear).
   - **Consumption Excludes Charging**: a flag for setups where the consumption
     sensor does not see the EV charging draw (most installs *do* see it). When
     enabled, do **not** add the current charge draw back when computing excess.
@@ -140,6 +155,14 @@ These rules govern *how* work is done in this repo. They override default behavi
 - `plugged_in` — IEC 61851 state in `{Complete, Stopped, Starting, Charging,
   Calibrating}`. Anything else (`Disconnected`, `NoPower`, `Unknown`,
   unavailable) is *not plugged in*.
+- `battery_power_w` — instantaneous home-battery power, normalised so
+  positive = charging regardless of the user's sensor sign convention
+  (the `battery_power_positive_is_charging` toggle). `None` if not
+  configured or if either battery sensor is unavailable.
+- `battery_soc_pct` — home-battery state of charge, percentage. `None`
+  if not configured or if either battery sensor is unavailable.
+- `battery_priority_active` — true when this cycle's `excess_w` was
+  reduced (or zeroed) by battery-priority gating.
 
 ## State machine
 
@@ -169,10 +192,11 @@ across polls but reset on mode change or plug events.
 `TeslaSolarChargerCoordinator` in `coordinator.py` is the heart of the integration. On each poll (`_async_update_data`):
 
 1. Read `production_w` and `consumption_w` from configured sensor entity IDs via `hass.states.get`. Production unavailable → treat as 0 W. Consumption unavailable → solar tracking disabled (Charge Now / Off still work).
-2. Compute `excess_w` using `_compute_excess_w_with_values`. The formula accounts for whether the consumption sensor already includes the EV draw.
-3. Advance the state machine (`_update_state_machine`): `DISABLED → IDLE → TRACKING → STOPPING → COOLDOWN → FORCED`. Hysteresis timers use `time.monotonic()` stored in `_stop_timer_start` / `_cooldown_timer_start`; they reset on plug events and mode changes.
-4. Compute `target_amps = floor(excess_w / voltage)`, clamped to `[min_amps, max_amps]`.
-5. Issue `number.set_value` / `switch.turn_on` / `switch.turn_off` service calls via `hass.services.async_call` — **only when the value differs from the last commanded value** (debounce). This protects the BLE link from flooding.
+2. Compute `excess_w` using `_compute_excess_w_with_values`. The formula accounts for whether the consumption sensor already includes the EV draw, and gates the EV-draw back-out on `_is_charging` so a stale `_commanded_amps` doesn't inflate household-load when the switch is off.
+3. If a battery power+SoC sensor pair is configured and both are readable, apply `_apply_battery_priority(excess_w, soc_pct)` before the state machine sees `excess_w`. Below the limit → 0; at/above the limit → unchanged (hard cutoff) or bucketed deduction (graduated). Sensors unavailable → fall back to no-battery formula.
+4. Advance the state machine (`_update_state_machine`): `DISABLED → IDLE → TRACKING → STOPPING → COOLDOWN → FORCED`. Hysteresis timers use `time.monotonic()` stored in `_stop_timer_start` / `_cooldown_timer_start`; they reset on plug events and mode changes.
+5. Compute `target_amps = floor(excess_w / voltage)`, clamped to `[min_amps, max_amps]`.
+6. Issue `number.set_value` / `switch.turn_on` / `switch.turn_off` service calls via `hass.services.async_call` — **only when the value differs from the last commanded value** (debounce). This protects the BLE link from flooding.
 6. Return a `dict[str, Any]` snapshot; all platform entities (`select.py`, `number.py`, `switch.py`, `sensor.py`) read from this dict and never call services directly.
 
 Config/options flow (`config_flow.py`) splits user input by destination:

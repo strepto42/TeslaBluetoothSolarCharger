@@ -25,7 +25,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up sensor entities."""
     coordinator = entry.runtime_data
-    async_add_entities([
+    entities: list[TeslaSolarChargerBaseSensor] = [
         TeslaSolarChargerTargetAmpsSensor(coordinator, entry),
         TeslaSolarChargerCommandedAmpsSensor(coordinator, entry),
         TeslaSolarChargerExcessSolarSensor(coordinator, entry),
@@ -34,7 +34,13 @@ async def async_setup_entry(
         TeslaSolarChargerProductionSensor(coordinator, entry),
         TeslaSolarChargerConsumptionSensor(coordinator, entry),
         TeslaSolarChargerDiagnosticsSensor(coordinator, entry),
-    ])
+    ]
+    # Battery diagnostic sensors only register if both battery sensors are
+    # configured — otherwise they'd report None forever.
+    if entry.data.get("battery_power_sensor") and entry.data.get("battery_soc_sensor"):
+        entities.append(TeslaSolarChargerBatteryPowerSensor(coordinator, entry))
+        entities.append(TeslaSolarChargerBatterySocSensor(coordinator, entry))
+    async_add_entities(entities)
 
 
 class TeslaSolarChargerBaseSensor(CoordinatorEntity[TeslaSolarChargerCoordinator], SensorEntity):
@@ -264,6 +270,11 @@ class TeslaSolarChargerDiagnosticsSensor(TeslaSolarChargerBaseSensor):
             "last_command_succeeded": data.get("last_command_succeeded"),
             "last_command_sent_at": data.get("last_command_sent_at"),
 
+            # Battery awareness
+            "battery_power_w": data.get("battery_power_w"),
+            "battery_soc_pct": data.get("battery_soc_pct"),
+            "battery_priority_active": data.get("battery_priority_active"),
+
             # Configuration
             "config_production_sensor": entry_data.get("production_sensor"),
             "config_consumption_sensors": entry_data.get("consumption_sensors"),
@@ -274,6 +285,59 @@ class TeslaSolarChargerDiagnosticsSensor(TeslaSolarChargerBaseSensor):
             "config_min_amps": entry_options.get("min_amps"),
             "config_max_amps": entry_options.get("max_amps"),
             "config_margin_w": entry_options.get("margin_w"),
+            "config_battery_power_sensor": entry_data.get("battery_power_sensor"),
+            "config_battery_soc_sensor": entry_data.get("battery_soc_sensor"),
+            "config_battery_power_positive_is_charging": entry_data.get(
+                "battery_power_positive_is_charging"
+            ),
+            "config_battery_priority_charge_limit_pct": entry_options.get(
+                "battery_priority_charge_limit_pct"
+            ),
+            "config_battery_priority_style": entry_options.get(
+                "battery_priority_style"
+            ),
         }
+
+
+class TeslaSolarChargerBatteryPowerSensor(TeslaSolarChargerBaseSensor):
+    """Numeric diagnostic: home battery power, normalised positive=charging."""
+
+    _attr_translation_key = "battery_power"
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry, "battery_power")
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.data.get("battery_power_w")
+
+
+class TeslaSolarChargerBatterySocSensor(TeslaSolarChargerBaseSensor):
+    """Numeric diagnostic: home battery state of charge."""
+
+    _attr_translation_key = "battery_soc"
+    _attr_native_unit_of_measurement = "%"
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry, "battery_soc")
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.data.get("battery_soc_pct")
 
 

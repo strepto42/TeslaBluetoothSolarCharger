@@ -57,19 +57,23 @@ Before installing this integration, you need:
 
 4. Optionally configure `Consumption excludes EV charging` - only enable this if your consumption sensor does NOT include the EV charging circuit (most installations do NOT need this).
 
+5. (Optional) **Home Battery Awareness** — if you have a home battery (Powerwall, Sungrow, etc.), provide both a battery power sensor (W or kW) and a battery state-of-charge sensor (%). Use the *Battery power: positive value means charging* toggle to match your sensor's sign convention. Both sensors must be set together, or neither.
+
 ### Options
 
 After setup, you can configure additional options:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| Update Interval | 30s | How often to recalculate and adjust (10-300s) |
+| Update Interval | 5s | How often to recalculate and adjust (5-300s) |
 | Min Amps | 5A | Minimum charging amperage (Tesla minimum is 5A) |
 | Max Amps | 32A | Maximum charging amperage |
 | Margin | 0W | Buffer to subtract from excess (-5000 to 5000W) |
 | Min Solar Generation | 200W | Solar threshold below which charging stops |
 | Stop Delay | 360s | Wait time before stopping charge (6 minutes) |
 | Restart Delay | 900s | Cooldown after stopping before restart (15 minutes) |
+| Battery Priority Charge Limit | 80% | Home-battery SoC at/above which excess goes to EV. Below it, battery has priority. ChargeHQ recommends 60-90%. Only used when battery sensors are configured. |
+| Battery Priority Style | Hard cutoff | `Hard cutoff`: gates EV charging on/off at the limit (matches ChargeHQ docs). `Graduated`: tapers EV deduction in 5% bands above the limit (gentler, fewer contactor cycles). |
 
 ## Modes
 
@@ -133,11 +137,15 @@ The integration creates these entities:
 - **Commanded Amps**: Last amperage sent to car
 - **Excess Solar**: Calculated excess watts
 - **Controller State**: Current state machine state
-- **Plugged In**: Whether car is detected as plugged in
-- **Is Charging**: Whether we've commanded charging on
+- **Plugged In** (binary): Whether the car is plugged in
+- **Is Charging** (binary): Whether the integration has commanded charging on
+- **Last Command Succeeded** (binary, diagnostic): Did the last BLE command land
 - **Solar Production**: Current production reading
 - **Home Consumption**: Current consumption reading
 - **Diagnostics**: Summary with all data as attributes
+- **Home Battery Power** (only if battery configured, diagnostic): Normalised positive=charging
+- **Home Battery State of Charge** (only if battery configured, diagnostic): Battery SoC %
+- **Battery Priority Active** (binary, only if battery configured, diagnostic): True when battery priority gated this cycle
 
 ## Troubleshooting
 
@@ -178,7 +186,6 @@ This integration is intentionally limited in scope for the MVP:
 
 - **Single vehicle only** - Multi-vehicle support is not implemented
 - **Single-phase only** - Three-phase charging calculations are not supported
-- **No home battery awareness** - Does not account for home battery charge/discharge
 - **No scheduled charging** - No time-based charging schedules
 - **No Tesla cloud** - Requires local ESPHome BLE proxy; does not use Tesla's API
 
@@ -187,7 +194,7 @@ These may be added in future versions based on user feedback.
 ## Technical Details
 
 - Uses Home Assistant's `DataUpdateCoordinator` for polling
-- Default poll interval: 30 seconds
+- Default poll interval: 5 seconds
 - Communicates with Tesla via ESPHome BLE proxy service calls
 - No cloud dependencies - fully local operation
 - All entity IDs are user-configured, never hardcoded
