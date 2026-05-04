@@ -17,22 +17,9 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector
 
 from .const import (
-    BATTERY_PRIORITY_LIMIT_MAX,
-    BATTERY_PRIORITY_LIMIT_MIN,
-    BATTERY_PRIORITY_STYLES,
-    DEFAULT_BATTERY_PRIORITY_CHARGE_LIMIT_PCT,
-    DEFAULT_BATTERY_PRIORITY_STYLE,
-    DEFAULT_MIN_SOLAR_GENERATION_W,
     DEFAULT_NAME,
-    DEFAULT_RESTART_DELAY_SECONDS,
-    DEFAULT_STOP_DELAY_SECONDS,
-    DEFAULT_UPDATE_INTERVAL_SECONDS,
     DEFAULT_VOLTAGE,
     DOMAIN,
-    MIN_SOLAR_GENERATION_MAX,
-    MIN_SOLAR_GENERATION_MIN,
-    UPDATE_INTERVAL_MAX,
-    UPDATE_INTERVAL_MIN,
     VOLTAGE_MAX,
     VOLTAGE_MIN,
 )
@@ -61,19 +48,10 @@ DATA_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-# Fields that are user-tunable runtime parameters. Stored in entry.options.
-# min_amps/max_amps/margin_w are NOT here — they are owned by the dashboard
-# NumberEntity widgets, which write them directly to entry.options.
-OPTIONS_FIELDS: frozenset[str] = frozenset(
-    {
-        "update_interval_seconds",
-        "min_solar_generation_w",
-        "stop_delay_seconds",
-        "restart_delay_seconds",
-        "battery_priority_charge_limit_pct",
-        "battery_priority_style",
-    }
-)
+# Runtime tunables all live on dashboard NumberEntity / SelectEntity controls
+# now and write directly to entry.options. The options flow only edits entity
+# bindings (DATA_FIELDS); entry.options is preserved unchanged on save.
+OPTIONS_FIELDS: frozenset[str] = frozenset()
 
 
 def _validate_power_sensor(hass: HomeAssistant, entity_id: str) -> bool:
@@ -206,101 +184,15 @@ def _bindings_schema(defaults: dict[str, Any]) -> dict[Any, Any]:
     }
 
 
-def _timing_schema(defaults: dict[str, Any]) -> dict[Any, Any]:
-    """Schema fragment for the timing/threshold fields (kept in entry.options)."""
-    return {
-        vol.Required(
-            "update_interval_seconds",
-            default=defaults.get(
-                "update_interval_seconds", DEFAULT_UPDATE_INTERVAL_SECONDS
-            ),
-        ): selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=UPDATE_INTERVAL_MIN,
-                max=UPDATE_INTERVAL_MAX,
-                step=1,
-                unit_of_measurement="s",
-                mode=selector.NumberSelectorMode.BOX,
-            )
-        ),
-        vol.Required(
-            "min_solar_generation_w",
-            default=defaults.get(
-                "min_solar_generation_w", DEFAULT_MIN_SOLAR_GENERATION_W
-            ),
-        ): selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=MIN_SOLAR_GENERATION_MIN,
-                max=MIN_SOLAR_GENERATION_MAX,
-                step=1,
-                unit_of_measurement="W",
-                mode=selector.NumberSelectorMode.BOX,
-            )
-        ),
-        vol.Required(
-            "stop_delay_seconds",
-            default=defaults.get("stop_delay_seconds", DEFAULT_STOP_DELAY_SECONDS),
-        ): selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=0,
-                max=3600,
-                step=1,
-                unit_of_measurement="s",
-                mode=selector.NumberSelectorMode.BOX,
-            )
-        ),
-        vol.Required(
-            "restart_delay_seconds",
-            default=defaults.get(
-                "restart_delay_seconds", DEFAULT_RESTART_DELAY_SECONDS
-            ),
-        ): selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=0,
-                max=7200,
-                step=1,
-                unit_of_measurement="s",
-                mode=selector.NumberSelectorMode.BOX,
-            )
-        ),
-        vol.Required(
-            "battery_priority_charge_limit_pct",
-            default=defaults.get(
-                "battery_priority_charge_limit_pct",
-                DEFAULT_BATTERY_PRIORITY_CHARGE_LIMIT_PCT,
-            ),
-        ): selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=BATTERY_PRIORITY_LIMIT_MIN,
-                max=BATTERY_PRIORITY_LIMIT_MAX,
-                step=1,
-                unit_of_measurement="%",
-                mode=selector.NumberSelectorMode.BOX,
-            )
-        ),
-        vol.Required(
-            "battery_priority_style",
-            default=defaults.get(
-                "battery_priority_style", DEFAULT_BATTERY_PRIORITY_STYLE
-            ),
-        ): selector.SelectSelector(
-            selector.SelectSelectorConfig(
-                options=list(BATTERY_PRIORITY_STYLES),
-                translation_key="battery_priority_style",
-                mode=selector.SelectSelectorMode.DROPDOWN,
-            )
-        ),
-    }
-
-
 def _get_user_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     """Schema for the initial config flow — bindings only."""
     return vol.Schema(_bindings_schema(defaults or {}))
 
 
 def _get_options_schema(defaults: dict[str, Any]) -> vol.Schema:
-    """Schema for the options flow — bindings + timing."""
-    return vol.Schema({**_bindings_schema(defaults), **_timing_schema(defaults)})
+    """Schema for the options flow — bindings only (runtime tunables live on
+    dashboard NumberEntity / SelectEntity controls, not in this flow)."""
+    return vol.Schema(_bindings_schema(defaults))
 
 
 class TeslaSolarChargerConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -348,16 +240,15 @@ class TeslaSolarChargerOptionsFlow(OptionsFlow):
             errors = _validate_user_input(self.hass, user_input)
 
             if not errors:
-                # Split user_input by destination. Bindings → data, tunables →
-                # options. Preserve any existing options keys we don't manage
-                # (e.g. min_amps/max_amps/margin_w written by NumberEntity).
+                # The options flow only edits entity bindings (DATA_FIELDS).
+                # All runtime tunables live on dashboard NumberEntity /
+                # SelectEntity controls and are written directly to
+                # entry.options by those entities — we preserve options
+                # verbatim here. (OPTIONS_FIELDS is intentionally empty.)
                 new_data = {
                     k: v for k, v in user_input.items() if k in DATA_FIELDS
                 }
-                new_options = {
-                    **self.config_entry.options,
-                    **{k: v for k, v in user_input.items() if k in OPTIONS_FIELDS},
-                }
+                new_options = dict(self.config_entry.options)
                 self.hass.config_entries.async_update_entry(
                     self.config_entry,
                     data=new_data,

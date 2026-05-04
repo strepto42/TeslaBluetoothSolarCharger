@@ -271,7 +271,13 @@ class TestOptionsFlow:
         mock_hass: MagicMock,
         mock_config_entry: ConfigEntry,
     ):
-        """Entity bindings save to entry.data; timing tunables save to entry.options."""
+        """Entity bindings save to entry.data; entry.options preserved verbatim.
+
+        The options flow only edits entity bindings now — runtime tunables
+        live on dashboard NumberEntity / SelectEntity controls and are
+        written directly to entry.options by those entities. The options
+        flow's save path must preserve entry.options unchanged.
+        """
         user_input = {
             "name": "Tesla",
             "production_sensor": "sensor.solar_production",
@@ -281,10 +287,6 @@ class TestOptionsFlow:
             "charging_switch": "switch.tesla_charging",
             "charging_state_sensor": "sensor.tesla_charging_state",
             "voltage": 230,
-            "update_interval_seconds": 60,
-            "min_solar_generation_w": 300,
-            "stop_delay_seconds": 480,
-            "restart_delay_seconds": 1200,
         }
 
         await options_flow.async_step_init(user_input=user_input)
@@ -297,15 +299,12 @@ class TestOptionsFlow:
         assert saved_data["production_sensor"] == "sensor.solar_production"
         assert saved_data["amps_number"] == "number.tesla_charging_amps"
         assert saved_data["voltage"] == 230
-        # Timing tunables do not leak into data
+        # Tunables don't leak into data
         assert "update_interval_seconds" not in saved_data
-        assert "stop_delay_seconds" not in saved_data
-        # Tunables live in options
-        assert saved_options["update_interval_seconds"] == 60
-        assert saved_options["min_solar_generation_w"] == 300
-        assert saved_options["stop_delay_seconds"] == 480
-        assert saved_options["restart_delay_seconds"] == 1200
-        # Bindings do not leak into options
+        # Pre-existing options preserved verbatim
+        assert saved_options["update_interval_seconds"] == 30
+        assert saved_options["stop_delay_seconds"] == 360
+        # Bindings don't leak into options
         assert "production_sensor" not in saved_options
         assert "amps_number" not in saved_options
 
@@ -597,13 +596,76 @@ class TestBatteryAwarenessConfigFlow:
         assert result["errors"].get("battery_soc_sensor") == "invalid_battery_soc_unit"
 
     @pytest.mark.asyncio
-    async def test_options_flow_saves_battery_settings(
+    async def test_moved_tunables_skipped_by_options_flow(
         self,
         options_flow: TeslaSolarChargerOptionsFlow,
         mock_hass: MagicMock,
         mock_config_entry: ConfigEntry,
     ):
-        """Battery sensors save to entry.data; reserve & style save to entry.options."""
+        """5 tunables + battery_priority_style live on entities now.
+
+        Submitting them through the options flow should be ignored: the
+        save path must not write them to entry.options (they're owned by
+        their respective NumberEntity/SelectEntity setters). Pre-existing
+        values written by the entities must be preserved.
+        """
+        mock_hass.states.get = MagicMock(side_effect=_valid_battery_sensors_state)
+
+        # Pretend the user previously tuned these via the dashboard widgets
+        mock_config_entry.options = {
+            **mock_config_entry.options,
+            "update_interval_seconds": 45,
+            "min_solar_generation_w": 250,
+            "stop_delay_seconds": 480,
+            "restart_delay_seconds": 1200,
+            "battery_priority_charge_limit_pct": 65,
+            "battery_priority_style": "graduated",
+        }
+
+        # User submits the options form. Even if a misbehaving caller
+        # pushes these legacy keys, the save path drops them.
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+            "battery_power_sensor": "sensor.battery_power",
+            "battery_soc_sensor": "sensor.battery_soc",
+            "battery_power_positive_is_charging": True,
+            # Legacy keys a user might still send through:
+            "update_interval_seconds": 99,
+            "stop_delay_seconds": 99,
+        }
+
+        await options_flow.async_step_init(user_input=user_input)
+
+        saved_options = mock_hass.config_entries.async_update_entry.call_args.kwargs[
+            "options"
+        ]
+        # Pre-existing values preserved, not overwritten by submitted input
+        assert saved_options["update_interval_seconds"] == 45
+        assert saved_options["stop_delay_seconds"] == 480
+        assert saved_options["min_solar_generation_w"] == 250
+        assert saved_options["restart_delay_seconds"] == 1200
+        assert saved_options["battery_priority_charge_limit_pct"] == 65
+        assert saved_options["battery_priority_style"] == "graduated"
+
+    @pytest.mark.asyncio
+    async def test_options_flow_saves_battery_bindings(
+        self,
+        options_flow: TeslaSolarChargerOptionsFlow,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """Battery sensor bindings + sign toggle save to entry.data.
+
+        The reserve and style now live on a NumberEntity and a SelectEntity
+        respectively, not the options flow.
+        """
         mock_hass.states.get = MagicMock(side_effect=_valid_battery_sensors_state)
 
         user_input = {
@@ -618,24 +680,14 @@ class TestBatteryAwarenessConfigFlow:
             "battery_power_sensor": "sensor.battery_power",
             "battery_soc_sensor": "sensor.battery_soc",
             "battery_power_positive_is_charging": False,
-            "update_interval_seconds": 60,
-            "min_solar_generation_w": 300,
-            "stop_delay_seconds": 480,
-            "restart_delay_seconds": 1200,
-            "battery_priority_charge_limit_pct": 70,
-            "battery_priority_style": "graduated",
         }
 
         await options_flow.async_step_init(user_input=user_input)
 
         call = mock_hass.config_entries.async_update_entry.call_args
         saved_data = call.kwargs["data"]
-        saved_options = call.kwargs["options"]
 
         assert saved_data["battery_power_sensor"] == "sensor.battery_power"
         assert saved_data["battery_soc_sensor"] == "sensor.battery_soc"
         assert saved_data["battery_power_positive_is_charging"] is False
-
-        assert saved_options["battery_priority_charge_limit_pct"] == 70
-        assert saved_options["battery_priority_style"] == "graduated"
 

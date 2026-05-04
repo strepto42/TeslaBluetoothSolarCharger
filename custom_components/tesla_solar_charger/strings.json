@@ -58,13 +58,7 @@
           "voltage": "Grid Voltage",
           "battery_power_sensor": "Home Battery Power Sensor (optional)",
           "battery_soc_sensor": "Home Battery State of Charge Sensor (optional)",
-          "battery_power_positive_is_charging": "Battery power: positive value means charging",
-          "update_interval_seconds": "Update Interval",
-          "min_solar_generation_w": "Minimum Solar Generation",
-          "stop_delay_seconds": "Stop Delay",
-          "restart_delay_seconds": "Restart Cooldown",
-          "battery_priority_charge_limit_pct": "Battery Priority Charge Limit",
-          "battery_priority_style": "Battery Priority Style"
+          "battery_power_positive_is_charging": "Battery power: positive value means charging"
         },
         "data_description": {
           "name": "A friendly name for this integration instance.",
@@ -77,22 +71,8 @@
           "voltage": "Your local grid voltage (230V EU, 240V UK, 120V US). Used for watts/amps conversion.",
           "battery_power_sensor": "Optional. Sensor reporting home-battery instantaneous power in W or kW. Required together with the SoC sensor.",
           "battery_soc_sensor": "Optional. Sensor reporting home-battery state of charge as a percentage. Required together with the power sensor.",
-          "battery_power_positive_is_charging": "Sign convention for the battery power sensor. On: positive watts = charging. Off: positive watts = discharging.",
-          "update_interval_seconds": "How often to recalculate excess solar and adjust charging (5-300 seconds). Lower = more responsive but more commands sent to car.",
-          "min_solar_generation_w": "Solar production threshold (0-10000W). Below this, Solar+Grid mode stops charging. Prevents charging at night or with minimal solar.",
-          "stop_delay_seconds": "Seconds to wait before stopping charge when excess drops below minimum (0-3600). Default 360s (6 min). Prevents rapid on/off cycling during brief cloud cover.",
-          "restart_delay_seconds": "Cooldown seconds after stopping before charging can restart (0-7200). Default 900s (15 min). Reduces Tesla contactor wear from frequent start/stop cycles.",
-          "battery_priority_charge_limit_pct": "Home-battery charge target (0-100%). Below this, the battery has priority and the EV does not charge from solar. ChargeHQ recommends 60-90%.",
-          "battery_priority_style": "Hard cutoff (ChargeHQ-style) gates EV charging on/off at the limit. Graduated tapers EV charging in 5% bands above the limit (gentler, fewer contactor cycles)."
+          "battery_power_positive_is_charging": "Sign convention for the battery power sensor. On: positive watts = charging. Off: positive watts = discharging."
         }
-      }
-    }
-  },
-  "selector": {
-    "battery_priority_style": {
-      "options": {
-        "hard_cutoff": "Hard cutoff (ChargeHQ-style)",
-        "graduated": "Graduated"
       }
     }
   },
@@ -106,6 +86,13 @@
           "solar_plus_grid": "Solar + Grid",
           "charge_now": "Charge Now"
         }
+      },
+      "battery_priority_style": {
+        "name": "Battery Priority Style",
+        "state": {
+          "hard_cutoff": "Hard cutoff (ChargeHQ-style)",
+          "graduated": "Graduated"
+        }
       }
     },
     "number": {
@@ -117,6 +104,21 @@
       },
       "margin_w": {
         "name": "Margin"
+      },
+      "update_interval_seconds": {
+        "name": "Update Interval"
+      },
+      "min_solar_generation_w": {
+        "name": "Minimum Solar Generation"
+      },
+      "stop_delay_seconds": {
+        "name": "Stop Delay"
+      },
+      "restart_delay_seconds": {
+        "name": "Restart Cooldown"
+      },
+      "battery_priority_charge_limit_pct": {
+        "name": "Battery Priority Charge Limit"
       }
     },
     "switch": {

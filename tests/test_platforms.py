@@ -447,6 +447,170 @@ class TestNumberEntities:
         coordinator.async_request_refresh.assert_called_once()
 
 
+class TestMovedTunableNumbers:
+    """5 tunables previously in the options flow are now NumberEntity controls."""
+
+    @pytest.mark.asyncio
+    async def test_update_interval_number(self, mock_hass: MagicMock):
+        from custom_components.tesla_solar_charger.number import (
+            TeslaSolarChargerUpdateIntervalNumber,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {}
+        entry = MagicMock()
+        entry.entry_id = "test"
+        entry.options = {"update_interval_seconds": 30}
+
+        number = TeslaSolarChargerUpdateIntervalNumber(coordinator, entry)
+        assert number.native_value == 30
+        assert number.native_min_value == 5
+        assert number.native_max_value == 300
+        assert number.native_unit_of_measurement == "s"
+
+    @pytest.mark.asyncio
+    async def test_update_interval_setter_mutates_coordinator(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ):
+        """Setting update_interval must update coordinator.update_interval directly."""
+        from datetime import timedelta
+        from custom_components.tesla_solar_charger.number import (
+            TeslaSolarChargerUpdateIntervalNumber,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {}
+        coordinator.async_request_refresh = AsyncMock()
+        coordinator.update_interval = timedelta(seconds=5)
+
+        mock_config_entry.options = {"update_interval_seconds": 5}
+
+        number = TeslaSolarChargerUpdateIntervalNumber(coordinator, mock_config_entry)
+        number.hass = mock_hass
+        await number.async_set_native_value(60)
+
+        # Coordinator's running interval is updated in place; no reload needed.
+        assert coordinator.update_interval == timedelta(seconds=60)
+        mock_hass.config_entries.async_update_entry.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_min_solar_generation_number(self, mock_hass: MagicMock):
+        from custom_components.tesla_solar_charger.number import (
+            TeslaSolarChargerMinSolarGenerationNumber,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {}
+        entry = MagicMock()
+        entry.entry_id = "test"
+        entry.options = {"min_solar_generation_w": 500}
+
+        number = TeslaSolarChargerMinSolarGenerationNumber(coordinator, entry)
+        assert number.native_value == 500
+        assert number.native_min_value == 0
+        assert number.native_max_value == 10000
+        assert number.native_unit_of_measurement == "W"
+
+    @pytest.mark.asyncio
+    async def test_stop_delay_number(self, mock_hass: MagicMock):
+        from custom_components.tesla_solar_charger.number import (
+            TeslaSolarChargerStopDelayNumber,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {}
+        entry = MagicMock()
+        entry.entry_id = "test"
+        entry.options = {"stop_delay_seconds": 360}
+
+        number = TeslaSolarChargerStopDelayNumber(coordinator, entry)
+        assert number.native_value == 360
+        assert number.native_min_value == 0
+        assert number.native_max_value == 3600
+        assert number.native_unit_of_measurement == "s"
+
+    @pytest.mark.asyncio
+    async def test_restart_delay_number(self, mock_hass: MagicMock):
+        from custom_components.tesla_solar_charger.number import (
+            TeslaSolarChargerRestartDelayNumber,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {}
+        entry = MagicMock()
+        entry.entry_id = "test"
+        entry.options = {"restart_delay_seconds": 900}
+
+        number = TeslaSolarChargerRestartDelayNumber(coordinator, entry)
+        assert number.native_value == 900
+        assert number.native_min_value == 0
+        assert number.native_max_value == 7200
+        assert number.native_unit_of_measurement == "s"
+
+    @pytest.mark.asyncio
+    async def test_battery_priority_charge_limit_number(self, mock_hass: MagicMock):
+        from custom_components.tesla_solar_charger.number import (
+            TeslaSolarChargerBatteryPriorityLimitNumber,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {}
+        entry = MagicMock()
+        entry.entry_id = "test"
+        entry.options = {"battery_priority_charge_limit_pct": 75}
+
+        number = TeslaSolarChargerBatteryPriorityLimitNumber(coordinator, entry)
+        assert number.native_value == 75
+        assert number.native_min_value == 0
+        assert number.native_max_value == 100
+        assert number.native_unit_of_measurement == "%"
+
+
+class TestBatteryPriorityStyleSelect:
+    """battery_priority_style is now a SelectEntity, not an options-flow field."""
+
+    @pytest.mark.asyncio
+    async def test_select_options(self, mock_hass: MagicMock):
+        from custom_components.tesla_solar_charger.select import (
+            TeslaSolarChargerBatteryPriorityStyleSelect,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {}
+        entry = MagicMock()
+        entry.entry_id = "test"
+        entry.options = {"battery_priority_style": "hard_cutoff"}
+
+        select = TeslaSolarChargerBatteryPriorityStyleSelect(coordinator, entry)
+        assert "hard_cutoff" in select.options
+        assert "graduated" in select.options
+        assert select.current_option == "hard_cutoff"
+
+    @pytest.mark.asyncio
+    async def test_select_setter_writes_to_options(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ):
+        from custom_components.tesla_solar_charger.select import (
+            TeslaSolarChargerBatteryPriorityStyleSelect,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {}
+        coordinator.async_request_refresh = AsyncMock()
+
+        mock_config_entry.options = {"battery_priority_style": "hard_cutoff"}
+
+        select = TeslaSolarChargerBatteryPriorityStyleSelect(
+            coordinator, mock_config_entry
+        )
+        select.hass = mock_hass
+
+        await select.async_select_option("graduated")
+
+        mock_hass.config_entries.async_update_entry.assert_called()
+        coordinator.async_request_refresh.assert_called_once()
+
+
 class TestDeviceInfo:
     """Test device info grouping."""
 

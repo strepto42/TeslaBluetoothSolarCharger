@@ -1,9 +1,11 @@
 """Number platform for Tesla Solar Charger."""
 from __future__ import annotations
 
+from datetime import timedelta
+
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfElectricCurrent, UnitOfPower
+from homeassistant.const import EntityCategory, UnitOfElectricCurrent, UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -13,12 +15,23 @@ from . import TeslaSolarChargerConfigEntry
 from .const import (
     AMPS_MAX_LIMIT,
     AMPS_MIN_LIMIT,
+    BATTERY_PRIORITY_LIMIT_MAX,
+    BATTERY_PRIORITY_LIMIT_MIN,
+    DEFAULT_BATTERY_PRIORITY_CHARGE_LIMIT_PCT,
     DEFAULT_MARGIN_W,
     DEFAULT_MAX_AMPS,
     DEFAULT_MIN_AMPS,
+    DEFAULT_MIN_SOLAR_GENERATION_W,
+    DEFAULT_RESTART_DELAY_SECONDS,
+    DEFAULT_STOP_DELAY_SECONDS,
+    DEFAULT_UPDATE_INTERVAL_SECONDS,
     DOMAIN,
     MARGIN_MAX,
     MARGIN_MIN,
+    MIN_SOLAR_GENERATION_MAX,
+    MIN_SOLAR_GENERATION_MIN,
+    UPDATE_INTERVAL_MAX,
+    UPDATE_INTERVAL_MIN,
 )
 from .coordinator import TeslaSolarChargerCoordinator
 
@@ -30,11 +43,18 @@ async def async_setup_entry(
 ) -> None:
     """Set up number entities."""
     coordinator = entry.runtime_data
-    async_add_entities([
+    entities: list[TeslaSolarChargerBaseNumber] = [
         TeslaSolarChargerMinAmpsNumber(coordinator, entry),
         TeslaSolarChargerMaxAmpsNumber(coordinator, entry),
         TeslaSolarChargerMarginNumber(coordinator, entry),
-    ])
+        TeslaSolarChargerUpdateIntervalNumber(coordinator, entry),
+        TeslaSolarChargerMinSolarGenerationNumber(coordinator, entry),
+        TeslaSolarChargerStopDelayNumber(coordinator, entry),
+        TeslaSolarChargerRestartDelayNumber(coordinator, entry),
+    ]
+    if entry.data.get("battery_power_sensor") and entry.data.get("battery_soc_sensor"):
+        entities.append(TeslaSolarChargerBatteryPriorityLimitNumber(coordinator, entry))
+    async_add_entities(entities)
 
 
 class TeslaSolarChargerBaseNumber(CoordinatorEntity[TeslaSolarChargerCoordinator], NumberEntity):
@@ -153,4 +173,145 @@ class TeslaSolarChargerMarginNumber(TeslaSolarChargerBaseNumber):
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the value."""
+        await self._async_update_option(value)
+
+
+class TeslaSolarChargerUpdateIntervalNumber(TeslaSolarChargerBaseNumber):
+    """Polling interval. Setter mutates coordinator.update_interval directly."""
+
+    _attr_translation_key = "update_interval_seconds"
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+    _attr_native_min_value = UPDATE_INTERVAL_MIN
+    _attr_native_max_value = UPDATE_INTERVAL_MAX
+    _attr_native_step = 1
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry, "update_interval_seconds")
+
+    @property
+    def native_value(self) -> int:
+        return self._entry.options.get(
+            "update_interval_seconds", DEFAULT_UPDATE_INTERVAL_SECONDS
+        )
+
+    async def async_set_native_value(self, value: float) -> None:
+        seconds = int(value)
+        # Persist to options first…
+        await self._async_update_option(seconds)
+        # …and then update the live coordinator interval so the change
+        # takes effect on the next scheduled cycle without a reload.
+        self.coordinator.update_interval = timedelta(seconds=seconds)
+
+
+class TeslaSolarChargerMinSolarGenerationNumber(TeslaSolarChargerBaseNumber):
+    """Minimum solar production threshold. Solar+Grid stops below this."""
+
+    _attr_translation_key = "min_solar_generation_w"
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_native_min_value = MIN_SOLAR_GENERATION_MIN
+    _attr_native_max_value = MIN_SOLAR_GENERATION_MAX
+    _attr_native_step = 1
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry, "min_solar_generation_w")
+
+    @property
+    def native_value(self) -> int:
+        return self._entry.options.get(
+            "min_solar_generation_w", DEFAULT_MIN_SOLAR_GENERATION_W
+        )
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._async_update_option(value)
+
+
+class TeslaSolarChargerStopDelayNumber(TeslaSolarChargerBaseNumber):
+    """Seconds below threshold before STOPPING progresses to COOLDOWN."""
+
+    _attr_translation_key = "stop_delay_seconds"
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+    _attr_native_min_value = 0
+    _attr_native_max_value = 3600
+    _attr_native_step = 1
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry, "stop_delay_seconds")
+
+    @property
+    def native_value(self) -> int:
+        return self._entry.options.get(
+            "stop_delay_seconds", DEFAULT_STOP_DELAY_SECONDS
+        )
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._async_update_option(value)
+
+
+class TeslaSolarChargerRestartDelayNumber(TeslaSolarChargerBaseNumber):
+    """COOLDOWN duration before TRACKING can restart after a stop."""
+
+    _attr_translation_key = "restart_delay_seconds"
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+    _attr_native_min_value = 0
+    _attr_native_max_value = 7200
+    _attr_native_step = 1
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry, "restart_delay_seconds")
+
+    @property
+    def native_value(self) -> int:
+        return self._entry.options.get(
+            "restart_delay_seconds", DEFAULT_RESTART_DELAY_SECONDS
+        )
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._async_update_option(value)
+
+
+class TeslaSolarChargerBatteryPriorityLimitNumber(TeslaSolarChargerBaseNumber):
+    """Home-battery SoC at/above which excess goes to EV (battery aware)."""
+
+    _attr_translation_key = "battery_priority_charge_limit_pct"
+    _attr_native_unit_of_measurement = "%"
+    _attr_native_min_value = BATTERY_PRIORITY_LIMIT_MIN
+    _attr_native_max_value = BATTERY_PRIORITY_LIMIT_MAX
+    _attr_native_step = 1
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry, "battery_priority_charge_limit_pct")
+
+    @property
+    def native_value(self) -> int:
+        return self._entry.options.get(
+            "battery_priority_charge_limit_pct",
+            DEFAULT_BATTERY_PRIORITY_CHARGE_LIMIT_PCT,
+        )
+
+    async def async_set_native_value(self, value: float) -> None:
         await self._async_update_option(value)
