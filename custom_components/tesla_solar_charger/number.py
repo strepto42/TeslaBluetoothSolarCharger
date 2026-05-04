@@ -103,6 +103,7 @@ class TeslaSolarChargerMinAmpsNumber(TeslaSolarChargerBaseNumber):
     _attr_native_min_value = AMPS_MIN_LIMIT
     _attr_native_max_value = AMPS_MAX_LIMIT
     _attr_native_step = 1
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(
         self,
@@ -130,6 +131,7 @@ class TeslaSolarChargerMaxAmpsNumber(TeslaSolarChargerBaseNumber):
     _attr_native_min_value = AMPS_MIN_LIMIT
     _attr_native_max_value = AMPS_MAX_LIMIT
     _attr_native_step = 1
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(
         self,
@@ -157,6 +159,7 @@ class TeslaSolarChargerMarginNumber(TeslaSolarChargerBaseNumber):
     _attr_native_min_value = MARGIN_MIN
     _attr_native_max_value = MARGIN_MAX
     _attr_native_step = 1
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(
         self,
