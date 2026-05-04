@@ -1,6 +1,4 @@
 ## User todo file - Claude is not to reference, modify, or delete this file. This is for user reference only.
-- [ ] Add home battery awareness to excess calculations
-- [ ] Port all config flow parameters to controls
 - [ ] Implement scheduled charging based on time of day or solar forecast
 - [ ] Ensure vehicle charge control does not apply when car is not at home
 - [ ] Add support for historical data tracking and visualization of solar production, consumption, and charging over time
