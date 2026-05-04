@@ -59,21 +59,24 @@ Before installing this integration, you need:
 
 5. (Optional) **Home Battery Awareness** — if you have a home battery (Powerwall, Sungrow, etc.), provide both a battery power sensor (W or kW) and a battery state-of-charge sensor (%). Use the *Battery power: positive value means charging* toggle to match your sensor's sign convention. Both sensors must be set together, or neither.
 
-### Options
+### Tunables
 
-After setup, you can configure additional options:
+All runtime tunables live on the integration's device page as editable
+controls — change them on the dashboard and the change takes effect
+immediately on the next poll cycle (no reload). The options flow only
+edits the entity bindings above.
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| Update Interval | 5s | How often to recalculate and adjust (5-300s) |
-| Min Amps | 5A | Minimum charging amperage (Tesla minimum is 5A) |
-| Max Amps | 32A | Maximum charging amperage |
-| Margin | 0W | Buffer to subtract from excess (-5000 to 5000W) |
-| Min Solar Generation | 200W | Solar threshold below which charging stops |
-| Stop Delay | 360s | Wait time before stopping charge (6 minutes) |
-| Restart Delay | 900s | Cooldown after stopping before restart (15 minutes) |
-| Battery Priority Charge Limit | 80% | Home-battery SoC at/above which excess goes to EV. Below it, battery has priority. ChargeHQ recommends 60-90%. Only used when battery sensors are configured. |
-| Battery Priority Style | Hard cutoff | `Hard cutoff`: gates EV charging on/off at the limit (matches ChargeHQ docs). `Graduated`: tapers EV deduction in 5% bands above the limit (gentler, fewer contactor cycles). |
+| Control | Type | Default | Description |
+|---|---|---|---|
+| Update Interval | Number (s) | 5 | How often to recalculate and adjust (5–300 s). Setter updates the live coordinator interval directly. |
+| Minimum Amps | Number (A) | 5 | Tesla single-phase minimum is 5 A. |
+| Maximum Amps | Number (A) | 32 | Cap on commanded amps. |
+| Margin | Number (W) | 0 | Buffer subtracted from excess (-5000 to 5000 W). Negative values allow grid import. |
+| Minimum Solar Generation | Number (W) | 200 | Solar threshold below which Solar+Grid stops charging. |
+| Stop Delay | Number (s) | 360 | Wait time before STOPPING progresses to COOLDOWN (6 min). |
+| Restart Cooldown | Number (s) | 900 | Time in COOLDOWN before TRACKING can resume (15 min). Reduces contactor wear. |
+| Battery Priority Charge Limit | Number (%) | 80 | *(only when battery configured)* Home-battery SoC at/above which excess goes to EV. ChargeHQ recommends 60–90 %. |
+| Battery Priority Style | Select | Hard cutoff | *(only when battery configured)* `Hard cutoff` gates EV on/off at the limit (matches ChargeHQ docs). `Graduated` tapers EV deduction in 5 % bands above the limit (gentler, fewer contactor cycles). |
 
 ## Modes
 
@@ -128,14 +131,15 @@ The integration creates these entities:
 ### Controls
 - **Mode** (select): Off / Solar Only / Solar + Grid / Charge Now
 - **Master Enable** (switch): Global enable/disable
-- **Minimum Amps** (number): Min charging amperage
-- **Maximum Amps** (number): Max charging amperage  
-- **Margin** (number): Watts buffer for excess calculation
+- **Minimum Amps**, **Maximum Amps**, **Margin** (number)
+- **Update Interval**, **Minimum Solar Generation**, **Stop Delay**, **Restart Cooldown** (number)
+- **Battery Priority Charge Limit** (number, only if battery configured)
+- **Battery Priority Style** (select, only if battery configured): `hard_cutoff` / `graduated`
 
 ### Sensors
 - **Target Amps**: Calculated target amperage
 - **Commanded Amps**: Last amperage sent to car
-- **Excess Solar**: Calculated excess watts
+- **Excess Solar**: Calculated excess watts (after battery gating, if any)
 - **Controller State**: Current state machine state
 - **Plugged In** (binary): Whether the car is plugged in
 - **Is Charging** (binary): Whether the integration has commanded charging on
@@ -146,6 +150,8 @@ The integration creates these entities:
 - **Home Battery Power** (only if battery configured, diagnostic): Normalised positive=charging
 - **Home Battery State of Charge** (only if battery configured, diagnostic): Battery SoC %
 - **Battery Priority Active** (binary, only if battery configured, diagnostic): True when battery priority gated this cycle
+- **Excess Solar (Pre-Battery)** (only if battery configured, diagnostic): Excess before battery gating — what tracking would do without battery awareness
+- **Battery Priority Deduction** (only if battery configured, diagnostic): Watts the gating subtracted this cycle. Useful in graduated mode to see the active SoC band.
 
 ## Troubleshooting
 

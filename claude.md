@@ -184,8 +184,9 @@ States the coordinator tracks internally:
 - `FORCED` — Charge Now mode active.
 
 Transitions are driven by the coordinator on every poll cycle (default 5 s,
-configurable via the options flow). Timers are wall-clock; they survive
-across polls but reset on mode change or plug events.
+configurable via the **Update Interval** NumberEntity on the device's
+dashboard). Timers are wall-clock; they survive across polls but reset on
+mode change or plug events.
 
 ## Architecture
 
@@ -199,15 +200,27 @@ across polls but reset on mode change or plug events.
 6. Issue `number.set_value` / `switch.turn_on` / `switch.turn_off` service calls via `hass.services.async_call` — **only when the value differs from the last commanded value** (debounce). This protects the BLE link from flooding.
 6. Return a `dict[str, Any]` snapshot; all platform entities (`select.py`, `number.py`, `switch.py`, `sensor.py`) read from this dict and never call services directly.
 
-Config/options flow (`config_flow.py`) splits user input by destination:
-entity bindings (`production_sensor`, `consumption_sensors`, `amps_number`,
-`charging_switch`, `charging_state_sensor`, `voltage`, `name`,
-`consumption_excludes_charging`) → `entry.data`; runtime tunables
-(`update_interval_seconds`, `min_solar_generation_w`, `stop_delay_seconds`,
-`restart_delay_seconds`) → `entry.options`. `min_amps`, `max_amps`,
-and `margin_w` are not in either flow — they're owned by the dashboard
-NumberEntity widgets, which write to `entry.options`. The coordinator
-reads both stores via `_get_config_value`.
+Config/options flow (`config_flow.py`) edits **entity bindings only**:
+`production_sensor`, `consumption_sensors`, `consumption_excludes_charging`,
+`amps_number`, `charging_switch`, `charging_state_sensor`, `voltage`,
+`name`, plus the optional battery sensors and sign toggle. These are
+saved to `entry.data`; the options flow preserves `entry.options`
+verbatim on save (`OPTIONS_FIELDS` is empty by design).
+
+Every runtime tunable lives on a dashboard control that writes directly
+to `entry.options`:
+
+- `number.py` — Min Amps, Max Amps, Margin (W), Update Interval (s),
+  Minimum Solar Generation (W), Stop Delay (s), Restart Cooldown (s),
+  Battery Priority Charge Limit (%; only when battery configured).
+- `select.py` — Mode (always), Battery Priority Style (`hard_cutoff` /
+  `graduated`; only when battery configured).
+
+The Update Interval setter additionally mutates
+`coordinator.update_interval` so changes take effect on the next cycle
+without a reload. The coordinator reads tunables via `_get_config_value`,
+which checks `entry.options` first then falls back to `entry.data` then
+to a const default.
 
 ## File layout
 
