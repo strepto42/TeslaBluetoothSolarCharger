@@ -40,6 +40,8 @@ async def async_setup_entry(
     if entry.data.get("battery_power_sensor") and entry.data.get("battery_soc_sensor"):
         entities.append(TeslaSolarChargerBatteryPowerSensor(coordinator, entry))
         entities.append(TeslaSolarChargerBatterySocSensor(coordinator, entry))
+        entities.append(TeslaSolarChargerExcessPreBatterySensor(coordinator, entry))
+        entities.append(TeslaSolarChargerBatteryDeductionSensor(coordinator, entry))
     async_add_entities(entities)
 
 
@@ -274,6 +276,8 @@ class TeslaSolarChargerDiagnosticsSensor(TeslaSolarChargerBaseSensor):
             "battery_power_w": data.get("battery_power_w"),
             "battery_soc_pct": data.get("battery_soc_pct"),
             "battery_priority_active": data.get("battery_priority_active"),
+            "excess_pre_battery_w": data.get("excess_pre_battery_w"),
+            "battery_deduction_w": data.get("battery_deduction_w"),
 
             # Configuration
             "config_production_sensor": entry_data.get("production_sensor"),
@@ -339,5 +343,57 @@ class TeslaSolarChargerBatterySocSensor(TeslaSolarChargerBaseSensor):
     @property
     def native_value(self) -> float | None:
         return self.coordinator.data.get("battery_soc_pct")
+
+
+class TeslaSolarChargerExcessPreBatterySensor(TeslaSolarChargerBaseSensor):
+    """Excess solar before battery-priority gating is applied.
+
+    Lets users see what the integration would have tracked if there were
+    no battery awareness — i.e. how much surplus is actually available,
+    versus how much battery priority is allowing through to the EV.
+    """
+
+    _attr_translation_key = "excess_pre_battery"
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry, "excess_pre_battery")
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.data.get("excess_pre_battery_w")
+
+
+class TeslaSolarChargerBatteryDeductionSensor(TeslaSolarChargerBaseSensor):
+    """How many watts battery-priority gating is currently subtracting.
+
+    Particularly useful in graduated mode where the value tracks the
+    SoC band (-20A → -1A as SoC rises). In hard_cutoff mode it's
+    either zero (above limit) or the full pre-battery excess (below).
+    """
+
+    _attr_translation_key = "battery_deduction"
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry, "battery_deduction")
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.data.get("battery_deduction_w")
 
 

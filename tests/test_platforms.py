@@ -338,6 +338,36 @@ class TestBatteryDiagnosticEntities:
         assert sensor.native_unit_of_measurement == "%"
 
     @pytest.mark.asyncio
+    async def test_excess_pre_battery_sensor(self, mock_hass: MagicMock):
+        from custom_components.tesla_solar_charger.sensor import (
+            TeslaSolarChargerExcessPreBatterySensor,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {"excess_pre_battery_w": 5000.0}
+        entry = MagicMock()
+        entry.entry_id = "test"
+
+        sensor = TeslaSolarChargerExcessPreBatterySensor(coordinator, entry)
+        assert sensor.native_value == 5000.0
+        assert sensor.native_unit_of_measurement == "W"
+
+    @pytest.mark.asyncio
+    async def test_battery_deduction_sensor(self, mock_hass: MagicMock):
+        from custom_components.tesla_solar_charger.sensor import (
+            TeslaSolarChargerBatteryDeductionSensor,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {"battery_deduction_w": 1150.0}
+        entry = MagicMock()
+        entry.entry_id = "test"
+
+        sensor = TeslaSolarChargerBatteryDeductionSensor(coordinator, entry)
+        assert sensor.native_value == 1150.0
+        assert sensor.native_unit_of_measurement == "W"
+
+    @pytest.mark.asyncio
     async def test_battery_priority_binary_sensor(self, mock_hass: MagicMock):
         from custom_components.tesla_solar_charger.binary_sensor import (
             TeslaSolarChargerBatteryPriorityBinarySensor,

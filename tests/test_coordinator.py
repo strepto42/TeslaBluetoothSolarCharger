@@ -1434,3 +1434,141 @@ class TestBuildDataDictBatteryKeys:
         assert data["battery_soc_pct"] is None
         assert data["battery_priority_active"] is False
 
+
+class TestExcessPreBatteryAndDeduction:
+    """The data dict exposes the pre-battery excess and the deduction applied
+    by battery priority, so users can see the effect of gating at a glance."""
+
+    @pytest.fixture
+    def coordinator(
+        self,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ) -> TeslaSolarChargerCoordinator:
+        mock_config_entry.data["battery_power_sensor"] = "sensor.battery_power"
+        mock_config_entry.data["battery_soc_sensor"] = "sensor.battery_soc"
+        mock_config_entry.data["battery_power_positive_is_charging"] = True
+        mock_config_entry.options["battery_priority_charge_limit_pct"] = 80
+        mock_config_entry.options["battery_priority_style"] = "graduated"
+
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        coord._mode = Mode.SOLAR_ONLY
+        coord._master_enabled = True
+        coord._was_plugged_in = True
+        coord._controller_state = ControllerState.TRACKING
+        return coord
+
+    @pytest.mark.asyncio
+    async def test_pre_battery_and_deduction_in_graduated_band(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+    ):
+        """SoC=85 (limit+5) → bucket 1 → 20A * 230V = 4600W deduction."""
+        def get_state(entity_id: str):
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "10000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "0", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Charging", {})
+            if entity_id == "sensor.battery_power":
+                return State(entity_id, "0", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.battery_soc":
+                return State(entity_id, "85", {"unit_of_measurement": "%"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        data = await coordinator._async_update_data()
+
+        # Pre-battery excess = production - consumption = 10000 - 0 = 10000W
+        # (no EV draw since _is_charging is False initially)
+        assert data["excess_pre_battery_w"] == 10000.0
+        # Bucket 1 deduction at SoC=85 with limit=80 → 20A × 230V = 4600W
+        assert data["battery_deduction_w"] == 4600.0
+        # Final excess = 10000 - 4600 = 5400W
+        assert data["excess_w"] == 5400.0
+
+    @pytest.mark.asyncio
+    async def test_deduction_zero_above_top_band(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+    ):
+        """SoC=100 (limit+20, beyond top band) → 1A × 230V = 230W deduction."""
+        def get_state(entity_id: str):
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "5000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "0", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Charging", {})
+            if entity_id == "sensor.battery_power":
+                return State(entity_id, "0", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.battery_soc":
+                return State(entity_id, "100", {"unit_of_measurement": "%"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        data = await coordinator._async_update_data()
+
+        assert data["excess_pre_battery_w"] == 5000.0
+        assert data["battery_deduction_w"] == 230.0
+        assert data["excess_w"] == 4770.0
+
+    @pytest.mark.asyncio
+    async def test_deduction_below_limit_zeros_excess(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+    ):
+        """SoC <= limit → all of pre-battery excess is deducted."""
+        def get_state(entity_id: str):
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "5000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "0", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Charging", {})
+            if entity_id == "sensor.battery_power":
+                return State(entity_id, "0", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.battery_soc":
+                return State(entity_id, "70", {"unit_of_measurement": "%"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        data = await coordinator._async_update_data()
+
+        assert data["excess_pre_battery_w"] == 5000.0
+        assert data["battery_deduction_w"] == 5000.0
+        assert data["excess_w"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_deduction_zero_when_no_battery(
+        self,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """No battery configured → deduction is 0, pre-battery == excess."""
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        coord._mode = Mode.SOLAR_ONLY
+        coord._master_enabled = True
+        coord._was_plugged_in = True
+        coord._controller_state = ControllerState.TRACKING
+
+        def get_state(entity_id: str):
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "5000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "1000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Charging", {})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        data = await coord._async_update_data()
+
+        assert data["excess_pre_battery_w"] == 4000.0
+        assert data["battery_deduction_w"] == 0.0
+        assert data["excess_w"] == 4000.0
+

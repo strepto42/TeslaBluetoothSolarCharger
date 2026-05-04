@@ -156,6 +156,12 @@
       },
       "battery_soc": {
         "name": "Home Battery State of Charge"
+      },
+      "excess_pre_battery": {
+        "name": "Excess Solar (Pre-Battery)"
+      },
+      "battery_deduction": {
+        "name": "Battery Priority Deduction"
       }
     },
     "binary_sensor": {

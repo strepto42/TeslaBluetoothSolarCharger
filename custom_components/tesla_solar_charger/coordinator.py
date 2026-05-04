@@ -557,6 +557,10 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and excess_w_pre_battery is not None
             and excess_w != excess_w_pre_battery
         )
+        if excess_w_pre_battery is not None and excess_w is not None:
+            battery_deduction_w = max(0.0, excess_w_pre_battery - excess_w)
+        else:
+            battery_deduction_w = 0.0
 
         # Log sensor unavailability (but don't block execution)
         sensors_available = consumption_w is not None  # Production unavailable is OK (treated as 0)
@@ -621,6 +625,8 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             production_w=production_w,
             consumption_w=consumption_w,
             excess_w=excess_w,
+            excess_w_pre_battery=excess_w_pre_battery,
+            battery_deduction_w=battery_deduction_w,
             plugged_in=plugged_in,
             target_amps=target_amps,
             battery_power_w=battery_power_w,
@@ -633,6 +639,8 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         production_w: float | None,
         consumption_w: float | None,
         excess_w: float | None,
+        excess_w_pre_battery: float | None,
+        battery_deduction_w: float,
         plugged_in: bool,
         target_amps: int | None,
         battery_power_w: float | None,
@@ -646,6 +654,8 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "production_w": production_w,
             "consumption_w": consumption_w,
             "excess_w": excess_w,
+            "excess_pre_battery_w": excess_w_pre_battery,
+            "battery_deduction_w": battery_deduction_w,
             "target_amps": target_amps,
             "commanded_amps": self._commanded_amps,
             "is_charging": self._is_charging,
