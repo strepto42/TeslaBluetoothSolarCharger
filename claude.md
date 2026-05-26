@@ -70,6 +70,14 @@ These rules govern *how* work is done in this repo. They override default behavi
    releases — un-tagged bumps don't surface as updates to users. The
    user pushes the tag (`git push origin vX.Y.Z`); never push tags
    without explicit instruction.
+6. **Always work on a branch; land changes via PR.** Never commit
+   directly to `master`. Open a feature/fix branch for every change,
+   no matter how small (CI fix, doc tweak, typo). When ready, push the
+   branch and open a PR with `gh pr create`. The user reviews and
+   authorizes the merge; do not self-merge without confirmation. This
+   applies even to follow-up fixes
+   after a CI failure — open a new branch and a new PR, do not push
+   straight to `master`.
 
 ## Hard constraints
 
