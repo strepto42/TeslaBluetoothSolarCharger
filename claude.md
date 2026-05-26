@@ -64,6 +64,12 @@ These rules govern *how* work is done in this repo. They override default behavi
    production code or — if the test itself is genuinely wrong — stop and
    discuss it with the user before changing the test. The arrow always
    points from test → code, never the reverse.
+5. **Tag every version bump.** Whenever `manifest.json`'s `version` field
+   changes, propose a matching annotated git tag in the same change set
+   (`vMAJOR.MINOR.PATCH`, e.g. `v0.2.0`). HACS uses tags to detect new
+   releases — un-tagged bumps don't surface as updates to users. The
+   user pushes the tag (`git push origin vX.Y.Z`); never push tags
+   without explicit instruction.
 
 ## Hard constraints
 
