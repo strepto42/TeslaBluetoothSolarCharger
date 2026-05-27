@@ -614,11 +614,20 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await self._send_amps(target_amps)
                 await self._send_switch(on=True)
             else:
+                if plugged_in:
+                    await self._send_amps(0)
                 await self._send_switch(on=False)
         elif self._controller_state == ControllerState.STOPPING:
             # Hold amps but don't change switch during stop timer
             pass
         elif self._controller_state in (ControllerState.COOLDOWN, ControllerState.IDLE, ControllerState.DISABLED):
+            # Belt-and-braces: while plugged in, zero out the proxy's amps
+            # number so a stale value can't be drawn upon if anything
+            # external (Tesla auto-resume, proxy switch toggled elsewhere)
+            # starts charging while we're not in TRACKING. Debounce skips
+            # the BLE call once _commanded_amps is already 0.
+            if plugged_in:
+                await self._send_amps(0)
             await self._send_switch(on=False)
         
         return self._build_data_dict(
