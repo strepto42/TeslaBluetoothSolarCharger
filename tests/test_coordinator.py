@@ -1572,3 +1572,225 @@ class TestExcessPreBatteryAndDeduction:
         assert data["battery_deduction_w"] == 0.0
         assert data["excess_w"] == 4000.0
 
+
+class TestAmpsResetInNonChargingStates:
+    """When plugged in but not actively charging, the integration must reset
+    the BLE proxy's amps number to 0 — not just rely on the switch being off.
+
+    Bug scenario: integration commands 10A → user unplugs → switch goes off
+    via send_switch(off) but commanded amps on the proxy stays at 10 → user
+    replugs while integration is in IDLE / COOLDOWN / DISABLED → if anything
+    external (Tesla auto-resume, proxy switch toggled elsewhere) starts
+    charging, the car draws at the stale 10A because the integration never
+    cleared it.
+
+    STOPPING is intentionally exempt: it holds the previous amps so the EV
+    keeps charging while we wait out the 6-min stop timer.
+    """
+
+    @pytest.fixture
+    def coordinator(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ) -> TeslaSolarChargerCoordinator:
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        coord._mode = Mode.SOLAR_ONLY
+        coord._master_enabled = True
+        coord._was_plugged_in = True
+        # Stale value from a previous TRACKING session
+        coord._commanded_amps = 10
+        return coord
+
+    @staticmethod
+    def _amps_set_calls(mock_hass: MagicMock) -> list[int]:
+        """Extract every value passed to number.set_value on the amps entity."""
+        return [
+            c.args[2]["value"]
+            for c in mock_hass.services.async_call.call_args_list
+            if c.args[0] == "number" and c.args[1] == "set_value"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_idle_with_plugged_in_sends_amps_zero(
+        self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
+    ):
+        coordinator._controller_state = ControllerState.IDLE
+
+        def get_state(entity_id: str):
+            states = {
+                "sensor.solar_production": State(
+                    entity_id, "0", {"unit_of_measurement": "W"}
+                ),
+                "sensor.home_consumption": State(
+                    entity_id, "500", {"unit_of_measurement": "W"}
+                ),
+                "sensor.tesla_charging_state": State(entity_id, "Stopped", {}),
+            }
+            return states.get(entity_id)
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        await coordinator._async_update_data()
+
+        assert 0 in self._amps_set_calls(mock_hass), (
+            "IDLE + plugged_in must reset amps to 0; commanded_amps stale at 10"
+        )
+        assert coordinator._commanded_amps == 0
+
+    @pytest.mark.asyncio
+    async def test_cooldown_with_plugged_in_sends_amps_zero(
+        self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
+    ):
+        coordinator._controller_state = ControllerState.COOLDOWN
+        coordinator._cooldown_timer_start = time.monotonic()  # just started
+
+        def get_state(entity_id: str):
+            states = {
+                "sensor.solar_production": State(
+                    entity_id, "0", {"unit_of_measurement": "W"}
+                ),
+                "sensor.home_consumption": State(
+                    entity_id, "500", {"unit_of_measurement": "W"}
+                ),
+                "sensor.tesla_charging_state": State(entity_id, "Stopped", {}),
+            }
+            return states.get(entity_id)
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        await coordinator._async_update_data()
+
+        assert 0 in self._amps_set_calls(mock_hass)
+
+    @pytest.mark.asyncio
+    async def test_disabled_with_plugged_in_sends_amps_zero(
+        self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
+    ):
+        coordinator._mode = Mode.OFF  # → DISABLED in state machine
+
+        def get_state(entity_id: str):
+            states = {
+                "sensor.solar_production": State(
+                    entity_id, "0", {"unit_of_measurement": "W"}
+                ),
+                "sensor.home_consumption": State(
+                    entity_id, "500", {"unit_of_measurement": "W"}
+                ),
+                "sensor.tesla_charging_state": State(entity_id, "Stopped", {}),
+            }
+            return states.get(entity_id)
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        await coordinator._async_update_data()
+
+        assert 0 in self._amps_set_calls(mock_hass)
+
+    @pytest.mark.asyncio
+    async def test_stopping_with_plugged_in_holds_amps(
+        self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
+    ):
+        """STOPPING is the intentional exemption — hold amps while the
+        6-min stop timer ticks."""
+        coordinator._controller_state = ControllerState.STOPPING
+        coordinator._stop_timer_start = time.monotonic()  # just started
+        coordinator._is_charging = True
+
+        def get_state(entity_id: str):
+            states = {
+                "sensor.solar_production": State(
+                    entity_id, "0", {"unit_of_measurement": "W"}
+                ),
+                "sensor.home_consumption": State(
+                    entity_id, "3000", {"unit_of_measurement": "W"}
+                ),
+                "sensor.tesla_charging_state": State(entity_id, "Charging", {}),
+            }
+            return states.get(entity_id)
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        await coordinator._async_update_data()
+
+        # STOPPING must not touch amps
+        assert self._amps_set_calls(mock_hass) == []
+        # Commanded amps preserved
+        assert coordinator._commanded_amps == 10
+
+    @pytest.mark.asyncio
+    async def test_idle_with_not_plugged_in_does_not_send_amps(
+        self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
+    ):
+        """Not plugged in → leave the proxy alone. No amps update."""
+        coordinator._controller_state = ControllerState.IDLE
+        coordinator._was_plugged_in = False
+
+        def get_state(entity_id: str):
+            states = {
+                "sensor.solar_production": State(
+                    entity_id, "0", {"unit_of_measurement": "W"}
+                ),
+                "sensor.home_consumption": State(
+                    entity_id, "500", {"unit_of_measurement": "W"}
+                ),
+                "sensor.tesla_charging_state": State(
+                    entity_id, "Disconnected", {}
+                ),
+            }
+            return states.get(entity_id)
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        await coordinator._async_update_data()
+
+        # No amps set call should have been made
+        assert self._amps_set_calls(mock_hass) == []
+        # _commanded_amps preserved (we didn't touch it)
+        assert coordinator._commanded_amps == 10
+
+    @pytest.mark.asyncio
+    async def test_battery_priority_below_limit_lands_in_cooldown_with_zero_amps(
+        self,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """Battery priority compatibility: when battery gates excess to 0,
+        the state machine eventually lands the controller in STOPPING →
+        COOLDOWN. In COOLDOWN the new behaviour must apply: amps go to 0.
+        STOPPING (the intermediate state) still holds, as before.
+        """
+        mock_config_entry.data["battery_power_sensor"] = "sensor.battery_power"
+        mock_config_entry.data["battery_soc_sensor"] = "sensor.battery_soc"
+        mock_config_entry.data["battery_power_positive_is_charging"] = True
+        mock_config_entry.options["battery_priority_charge_limit_pct"] = 80
+        mock_config_entry.options["battery_priority_style"] = "hard_cutoff"
+
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        coord._mode = Mode.SOLAR_ONLY
+        coord._master_enabled = True
+        coord._was_plugged_in = True
+        coord._commanded_amps = 10
+        # Pretend we already passed STOPPING and entered COOLDOWN
+        coord._controller_state = ControllerState.COOLDOWN
+        coord._cooldown_timer_start = time.monotonic()
+
+        def get_state(entity_id: str):
+            states = {
+                "sensor.solar_production": State(
+                    entity_id, "5000", {"unit_of_measurement": "W"}
+                ),
+                "sensor.home_consumption": State(
+                    entity_id, "500", {"unit_of_measurement": "W"}
+                ),
+                "sensor.tesla_charging_state": State(entity_id, "Stopped", {}),
+                "sensor.battery_power": State(
+                    entity_id, "2000", {"unit_of_measurement": "W"}
+                ),
+                "sensor.battery_soc": State(
+                    entity_id, "60", {"unit_of_measurement": "%"}
+                ),
+            }
+            return states.get(entity_id)
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        data = await coord._async_update_data()
+
+        # Battery still gates excess regardless of fix
+        assert data["battery_priority_active"] is True
+        # COOLDOWN: amps reset to 0 by the new behaviour
+        assert 0 in TestAmpsResetInNonChargingStates._amps_set_calls(mock_hass)
+
