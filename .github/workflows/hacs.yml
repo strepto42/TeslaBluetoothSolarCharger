@@ -14,6 +14,3 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
-          # Skipped checks — repo-level configuration the action can't fix:
-          #   brands  → needs an icon PR to home-assistant/brands
-          ignore: brands
