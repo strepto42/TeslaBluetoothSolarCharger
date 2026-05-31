@@ -142,7 +142,7 @@ The integration creates these entities:
 - **Excess Solar**: Calculated excess watts (after battery gating, if any)
 - **Controller State**: Current state machine state
 - **Plugged In** (binary): Whether the car is plugged in
-- **Is Charging** (binary): Whether the integration has commanded charging on
+- **Is Charging** (binary): Whether the car is actually charging, read from the IEC charging-state sensor (not merely whether we commanded it on)
 - **Last Command Succeeded** (binary, diagnostic): Did the last BLE command land
 - **Solar Production**: Current production reading
 - **Home Consumption**: Current consumption reading

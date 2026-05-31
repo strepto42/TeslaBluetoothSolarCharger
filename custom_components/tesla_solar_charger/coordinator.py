@@ -28,8 +28,10 @@ from .const import (
     DEFAULT_VOLTAGE,
     DOMAIN,
     ControllerState,
+    IEC_CHARGING_STATE,
     IEC_PLUGGED_IN_STATES,
     Mode,
+    SWITCH_RESEND_INTERVAL_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -68,6 +70,10 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cooldown_timer_start: float | None = None
         self._was_plugged_in: bool = False
         self._sensor_unavailable_logged: bool = False
+        # Switch re-send throttle: the last on/off value we commanded and when,
+        # so we can re-assert a dropped command without flooding the BLE link.
+        self._last_switch_desired: bool | None = None
+        self._last_switch_sent_at: float | None = None
 
     # --- Properties ---
 
@@ -143,8 +149,29 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         
         if state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             return False
-        
+
         return state.state in IEC_PLUGGED_IN_STATES
+
+    def _read_charging_active(self) -> bool | None:
+        """Read whether the car is *actually* charging, from the IEC sensor.
+
+        Returns True if the car reports it is drawing charge, False if it is
+        plugged but not charging, and None if the sensor is missing/unavailable
+        (i.e. we cannot tell — typically BLE is down).
+
+        This is the source of truth for whether charging is happening, used in
+        preference to our own optimistic record of the last command we sent
+        (which may have been dropped over the unreliable BLE link).
+        """
+        entity_id = self.entry.data.get("charging_state_sensor")
+        if not entity_id:
+            return None
+
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+
+        return state.state == IEC_CHARGING_STATE
 
     def _compute_excess_w_with_values(
         self, production_w: float, consumption_w: float | None
@@ -452,24 +479,55 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._last_command_succeeded = False
 
     async def _send_switch(self, on: bool) -> None:
-        """Send switch command to ESPHome proxy.
-        
-        Only sends if state differs from last known state.
+        """Drive the charging switch toward the desired state.
+
+        Reconciles against the car's *actual* charging state (`self._is_charging`,
+        refreshed from the IEC sensor each cycle) rather than trusting that our
+        last command landed. While the car's reported state already matches what
+        we want, we send nothing (so steady state never floods the BLE link).
+
+        While it disagrees — e.g. we asked for off but a dropped BLE command
+        left the car still charging — we re-assert the command, but no more
+        often than SWITCH_RESEND_INTERVAL_SECONDS for the *same* desired value.
+        A genuine change of desired value is sent immediately.
         """
+        now = time.monotonic()
+
         if self._is_charging == on:
-            _LOGGER.debug("Switch already %s, skipping command", "on" if on else "off")
+            # Reality already matches intent — nothing to do.
             return
-        
+
+        # Reality disagrees. Throttle re-asserts of the same desired value so
+        # BLE latency / a stubborn car can't make us hammer the link.
+        if (
+            self._last_switch_desired == on
+            and self._last_switch_sent_at is not None
+            and (now - self._last_switch_sent_at) < SWITCH_RESEND_INTERVAL_SECONDS
+        ):
+            _LOGGER.debug(
+                "Switch %s already commanded %.0fs ago; awaiting effect",
+                "on" if on else "off",
+                now - self._last_switch_sent_at,
+            )
+            return
+
         switch_entity = self.entry.data.get("charging_switch")
         if not switch_entity:
             _LOGGER.error("No charging_switch entity configured")
             return
-        
+
         service = "turn_on" if on else "turn_off"
         _LOGGER.info(
             "Turning charging %s (entity: %s)",
             "ON" if on else "OFF", switch_entity
         )
+
+        # Record the attempt up front so the throttle applies whether or not
+        # the call raises. We do NOT optimistically set _is_charging here — it
+        # is refreshed from the IEC sensor at the top of each cycle, so the
+        # next cycle re-evaluates against reality and re-sends if needed.
+        self._last_switch_desired = on
+        self._last_switch_sent_at = now
 
         try:
             await self.hass.services.async_call(
@@ -478,10 +536,9 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 {"entity_id": switch_entity},
                 blocking=True,
             )
-            self._is_charging = on
-            self._last_command_sent_at = time.monotonic()
+            self._last_command_sent_at = now
             self._last_command_succeeded = True
-            _LOGGER.info("Charging %s", "started" if on else "stopped")
+            _LOGGER.info("Charging %s commanded", "start" if on else "stop")
         except Exception as err:
             _LOGGER.error("Failed to %s charging: %s", service, err)
             self._last_command_succeeded = False
@@ -543,6 +600,14 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         
         # Read plug state
         plugged_in = self._read_plug_state()
+
+        # Refresh our notion of whether the car is actually charging from the
+        # IEC sensor — the source of truth — rather than trusting that the last
+        # switch command we issued actually landed over BLE. When the sensor is
+        # unavailable (None) we keep the last known value as a best effort.
+        observed_charging = self._read_charging_active()
+        if observed_charging is not None:
+            self._is_charging = observed_charging
 
         # Read home battery state (None pair if unconfigured/unavailable)
         battery_power_w, battery_soc_pct = self._read_battery_state()
