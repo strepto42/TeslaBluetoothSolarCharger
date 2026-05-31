@@ -64,12 +64,22 @@ These rules govern *how* work is done in this repo. They override default behavi
    production code or — if the test itself is genuinely wrong — stop and
    discuss it with the user before changing the test. The arrow always
    points from test → code, never the reverse.
-5. **Tag every version bump.** Whenever `manifest.json`'s `version` field
-   changes, propose a matching annotated git tag in the same change set
-   (`vMAJOR.MINOR.PATCH`, e.g. `v0.2.0`). HACS uses tags to detect new
-   releases — un-tagged bumps don't surface as updates to users. The
-   user pushes the tag (`git push origin vX.Y.Z`); never push tags
-   without explicit instruction.
+5. **Version the change in the same PR; tag after merge.** Any
+   user-visible fix or feature ships a `manifest.json` `version` bump
+   **inside the same PR as the change** — never as a separate follow-up
+   PR, so one release maps cleanly to one change and master is never
+   left with un-released work.
+   - **Before opening the PR**, check the current state so you pick the
+     right next version: read `manifest.json`'s `version`, and run
+     `git tag` + `gh release list`. Do not assume the next number is
+     free — a prior session may have already used it.
+   - Bump to the next `MAJOR.MINOR.PATCH` accordingly and include that
+     commit in the PR.
+   - **After the PR merges**, create the matching annotated tag
+     (`vMAJOR.MINOR.PATCH`, e.g. `v0.2.0`) and a GitHub *release* (HACS
+     needs a release, not just a tag, to surface the update). The user
+     pushes the tag (`git push origin vX.Y.Z`); never push tags without
+     explicit instruction.
 6. **Always work on a branch; land changes via PR.** Never commit
    directly to `master`. Open a feature/fix branch for every change,
    no matter how small (CI fix, doc tweak, typo). When ready, push the
