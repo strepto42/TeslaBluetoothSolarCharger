@@ -1794,3 +1794,160 @@ class TestAmpsResetInNonChargingStates:
         # COOLDOWN: amps reset to 0 by the new behaviour
         assert 0 in TestAmpsResetInNonChargingStates._amps_set_calls(mock_hass)
 
+
+
+class TestSwitchReconciliationAgainstActualState:
+    """The switch must be driven toward the car's *actual* IEC state, not our
+    optimistic memory of what we last sent.
+
+    Bug: the car was charging at 5 A; excess fell; the controller commanded
+    `switch.turn_off`; `hass.services.async_call` returned (the proxy accepted
+    it) so `_is_charging` was set False — but BLE dropped the command and the
+    car kept charging. Because the debounce then compares the desired state to
+    our (now wrong) memory, the off was never re-sent and the car charged for
+    hours.
+
+    Correct behaviour: while the IEC sensor still reports "Charging", a desired
+    off must keep being re-sent until the car actually stops. Steady state
+    (reality already matches intent) must not re-send (flood protection).
+    """
+
+    @staticmethod
+    def _turn_off_calls(mock_hass: MagicMock) -> list:
+        return [
+            c
+            for c in mock_hass.services.async_call.call_args_list
+            if c.args[0] == "switch" and c.args[1] == "turn_off"
+        ]
+
+    @staticmethod
+    def _turn_on_calls(mock_hass: MagicMock) -> list:
+        return [
+            c
+            for c in mock_hass.services.async_call.call_args_list
+            if c.args[0] == "switch" and c.args[1] == "turn_on"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_dropped_off_keeps_resending_while_car_still_charging(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ):
+        """Car keeps reporting Charging (dropped offs) → keep commanding off."""
+        # Huge restart delay so we stay in COOLDOWN across the whole test.
+        mock_config_entry.options["restart_delay_seconds"] = 100000
+
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        coord._mode = Mode.SOLAR_ONLY
+        coord._master_enabled = True
+        coord._was_plugged_in = True
+        coord._controller_state = ControllerState.COOLDOWN
+        coord._commanded_amps = 5
+        coord._is_charging = True
+
+        def get_state(entity_id: str):
+            if entity_id == "sensor.tesla_charging_state":
+                # Car never stops — every off we send is dropped over BLE.
+                return State(entity_id, "Charging", {})
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "0", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "500", {"unit_of_measurement": "W"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+
+        clock = {"t": 1000.0}
+        with patch(
+            "custom_components.tesla_solar_charger.coordinator.time.monotonic",
+            side_effect=lambda: clock["t"],
+        ):
+            coord._cooldown_timer_start = clock["t"]
+            await coord._async_update_data()      # cycle 1
+            clock["t"] += 60
+            await coord._async_update_data()      # cycle 2 (60s later)
+            clock["t"] += 60
+            await coord._async_update_data()      # cycle 3 (120s later)
+
+        # The car never confirmed it stopped, so we must have re-sent off.
+        assert len(self._turn_off_calls(mock_hass)) >= 2, (
+            "integration gave up after one off despite the car still reporting "
+            "Charging"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_resend_when_actual_state_matches_desire(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ):
+        """Steady-state charging: car Charging, we want on → no repeated on."""
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        coord._mode = Mode.SOLAR_ONLY
+        coord._master_enabled = True
+        coord._was_plugged_in = True
+        coord._controller_state = ControllerState.TRACKING
+        coord._is_charging = True
+        coord._commanded_amps = 16
+
+        def get_state(entity_id: str):
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Charging", {})
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "6000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "500", {"unit_of_measurement": "W"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+
+        clock = {"t": 1000.0}
+        with patch(
+            "custom_components.tesla_solar_charger.coordinator.time.monotonic",
+            side_effect=lambda: clock["t"],
+        ):
+            for _ in range(3):
+                await coord._async_update_data()
+                clock["t"] += 60
+
+        # Already charging and we want to charge — never need to re-command on.
+        assert len(self._turn_on_calls(mock_hass)) == 0
+
+    @pytest.mark.asyncio
+    async def test_resend_is_throttled_within_interval(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ):
+        """Two cycles closer together than the re-send interval → one off only.
+
+        Protects the BLE link: while we wait for a command to take effect we
+        must not re-send it every poll cycle.
+        """
+        mock_config_entry.options["restart_delay_seconds"] = 100000
+
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        coord._mode = Mode.SOLAR_ONLY
+        coord._master_enabled = True
+        coord._was_plugged_in = True
+        coord._controller_state = ControllerState.COOLDOWN
+        coord._commanded_amps = 5
+        coord._is_charging = True
+
+        def get_state(entity_id: str):
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Charging", {})
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "0", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "500", {"unit_of_measurement": "W"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+
+        clock = {"t": 1000.0}
+        with patch(
+            "custom_components.tesla_solar_charger.coordinator.time.monotonic",
+            side_effect=lambda: clock["t"],
+        ):
+            coord._cooldown_timer_start = clock["t"]
+            await coord._async_update_data()      # cycle 1 → sends off
+            clock["t"] += 5                        # only 5s later (< interval)
+            await coord._async_update_data()      # cycle 2 → throttled
+
+        assert len(self._turn_off_calls(mock_hass)) == 1

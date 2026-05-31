@@ -97,3 +97,17 @@ class ControllerState(StrEnum):
 # Values: Disconnected, Complete, Stopped, Starting, Charging, Calibrating, NoPower, Unknown
 IEC_PLUGGED_IN_STATES = {"Complete", "Stopped", "Starting", "Charging", "Calibrating"}
 
+# IEC 61851 state that means the car is *actually drawing* charge current right
+# now. Used as the source of truth for whether charging is happening, instead
+# of trusting that a service call we issued actually crossed the (unreliable)
+# BLE link.
+IEC_CHARGING_STATE = "Charging"
+
+# Minimum seconds between re-sending the *same* switch command. While the car's
+# reported state disagrees with what we want (e.g. a turn_off was dropped over
+# BLE), we re-assert the command — but no more often than this, so the known
+# multi-second BLE latency (and stubborn cases like a Complete car we keep
+# telling to charge) can't flood the link. A genuine change of desired state
+# bypasses this and sends immediately.
+SWITCH_RESEND_INTERVAL_SECONDS = 30
+
