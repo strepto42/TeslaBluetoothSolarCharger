@@ -314,6 +314,24 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         target = int(excess_w // voltage)
         return max(min_amps, min(target, max_amps))
 
+    def _transition(self, new_state: ControllerState, reason: str, **fields: Any) -> None:
+        """Set the controller state, logging the reason on an actual change.
+
+        Emits a parseable `TSC_TRANSITION old->new reason=... k=v` DEBUG line
+        only when the state actually changes, so a captured log shows exactly
+        why and when the controller moved between states.
+        """
+        if self._controller_state != new_state and _LOGGER.isEnabledFor(logging.DEBUG):
+            extra = " ".join(f"{k}={v}" for k, v in fields.items())
+            _LOGGER.debug(
+                "TSC_TRANSITION %s->%s reason=%s %s",
+                self._controller_state.value,
+                new_state.value,
+                reason,
+                extra,
+            )
+        self._controller_state = new_state
+
     def _update_state_machine(
         self,
         plugged_in: bool,
@@ -347,20 +365,25 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # DISABLED: Mode is Off or master disabled
         if self._mode == Mode.OFF or not self._master_enabled:
-            self._controller_state = ControllerState.DISABLED
+            self._transition(
+                ControllerState.DISABLED,
+                "mode_off_or_master_disabled",
+                mode=self._mode.value,
+                master=self._master_enabled,
+            )
             self._stop_timer_start = None
             return
 
         # FORCED: Charge Now mode (bypasses all timers)
         if self._mode == Mode.CHARGE_NOW:
-            self._controller_state = ControllerState.FORCED
+            self._transition(ControllerState.FORCED, "charge_now")
             self._stop_timer_start = None
             self._cooldown_timer_start = None
             return
 
         # IDLE: Not plugged in
         if not plugged_in:
-            self._controller_state = ControllerState.IDLE
+            self._transition(ControllerState.IDLE, "not_plugged_in")
             self._stop_timer_start = None
             self._cooldown_timer_start = None
             return
@@ -377,9 +400,19 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Determine next state after cooldown
             excess_sufficient = excess_w is not None and excess_w >= min_charging_w
             if excess_sufficient:
-                self._controller_state = ControllerState.TRACKING
+                self._transition(
+                    ControllerState.TRACKING,
+                    "cooldown_expired_excess_sufficient",
+                    excess_w=excess_w,
+                    min_chg_w=min_charging_w,
+                )
             else:
-                self._controller_state = ControllerState.IDLE
+                self._transition(
+                    ControllerState.IDLE,
+                    "cooldown_expired_excess_insufficient",
+                    excess_w=excess_w,
+                    min_chg_w=min_charging_w,
+                )
             return
 
         if self._mode == Mode.SOLAR_PLUS_GRID:
@@ -389,16 +422,30 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if production_w < min_solar_generation:
                 # Below minimum solar generation - should stop
                 if self._controller_state == ControllerState.TRACKING:
-                    self._controller_state = ControllerState.STOPPING
+                    self._transition(
+                        ControllerState.STOPPING,
+                        "below_min_solar_generation",
+                        production_w=production_w,
+                        min_solar_w=min_solar_generation,
+                    )
                     self._stop_timer_start = now
                     return
                 elif self._controller_state == ControllerState.STOPPING:
                     if self._stop_timer_start and (now - self._stop_timer_start) >= stop_delay:
-                        self._controller_state = ControllerState.COOLDOWN
+                        self._transition(
+                            ControllerState.COOLDOWN,
+                            "below_min_solar_stop_timer_expired",
+                            elapsed_s=round(now - self._stop_timer_start),
+                        )
                         self._cooldown_timer_start = now
                     return
                 else:
-                    self._controller_state = ControllerState.IDLE
+                    self._transition(
+                        ControllerState.IDLE,
+                        "below_min_solar_not_charging",
+                        production_w=production_w,
+                        min_solar_w=min_solar_generation,
+                    )
                     return
         
         # Determine if excess is sufficient
@@ -416,48 +463,75 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._controller_state == ControllerState.STOPPING:
             if excess_sufficient:
                 # Excess recovered - return to TRACKING
-                self._controller_state = ControllerState.TRACKING
+                self._transition(
+                    ControllerState.TRACKING,
+                    "excess_recovered",
+                    excess_w=excess_w,
+                    min_chg_w=min_charging_w,
+                )
                 self._stop_timer_start = None
                 return
-            
+
             # Check if stop timer expired
             if self._stop_timer_start is not None:
                 elapsed = now - self._stop_timer_start
                 if elapsed >= stop_delay:
                     # Timer expired - enter COOLDOWN
-                    self._controller_state = ControllerState.COOLDOWN
+                    self._transition(
+                        ControllerState.COOLDOWN,
+                        "stop_timer_expired",
+                        elapsed_s=round(elapsed),
+                        stop_delay_s=stop_delay,
+                    )
                     self._cooldown_timer_start = now
                     _LOGGER.info("Charging stopped after %d seconds below threshold", stop_delay)
             return
-        
+
         # Handle TRACKING and other states
         if excess_sufficient or self._controller_state == ControllerState.COOLDOWN:
             if self._controller_state != ControllerState.COOLDOWN:
-                self._controller_state = ControllerState.TRACKING
+                self._transition(
+                    ControllerState.TRACKING,
+                    "excess_sufficient",
+                    excess_w=excess_w,
+                    min_chg_w=min_charging_w,
+                )
         else:
             # Excess dropped below threshold
             if self._controller_state == ControllerState.TRACKING:
-                self._controller_state = ControllerState.STOPPING
+                self._transition(
+                    ControllerState.STOPPING,
+                    "excess_below_min",
+                    excess_w=excess_w,
+                    min_chg_w=min_charging_w,
+                )
                 self._stop_timer_start = now
-                _LOGGER.debug("Starting stop timer - excess below threshold")
             elif self._controller_state != ControllerState.STOPPING:
-                self._controller_state = ControllerState.IDLE
+                self._transition(
+                    ControllerState.IDLE,
+                    "excess_below_min_not_charging",
+                    excess_w=excess_w,
+                    min_chg_w=min_charging_w,
+                )
 
-    async def _send_amps(self, amps: int) -> None:
+    async def _send_amps(self, amps: int) -> str:
         """Send amps command to ESPHome proxy.
-        
+
         Only sends if value differs from last commanded value.
         Updates commanded_amps on success, logs on failure.
+
+        Returns a short status token (for the per-cycle debug trace):
+        ``skip:debounce`` | ``noentity`` | ``set:<amps>`` | ``fail``.
         """
         if self._commanded_amps == amps:
             _LOGGER.debug("Amps unchanged at %d, skipping command", amps)
-            return
-        
+            return "skip:debounce"
+
         amps_entity = self.entry.data.get("amps_number")
         if not amps_entity:
             _LOGGER.error("No amps_number entity configured")
-            return
-        
+            return "noentity"
+
         _LOGGER.info(
             "Setting charging amps: %d -> %d (entity: %s)",
             self._commanded_amps or 0, amps, amps_entity
@@ -474,11 +548,13 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._last_command_sent_at = time.monotonic()
             self._last_command_succeeded = True
             _LOGGER.info("Successfully set charging amps to %d", amps)
+            return f"set:{amps}"
         except Exception as err:
             _LOGGER.error("Failed to set charging amps to %d: %s", amps, err)
             self._last_command_succeeded = False
+            return "fail"
 
-    async def _send_switch(self, on: bool) -> None:
+    async def _send_switch(self, on: bool) -> str:
         """Drive the charging switch toward the desired state.
 
         Reconciles against the car's *actual* charging state (`self._is_charging`,
@@ -490,12 +566,16 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         left the car still charging — we re-assert the command, but no more
         often than SWITCH_RESEND_INTERVAL_SECONDS for the *same* desired value.
         A genuine change of desired value is sent immediately.
+
+        Returns a short status token (for the per-cycle debug trace):
+        ``skip:match`` | ``skip:throttle`` | ``noentity`` | ``on`` | ``off`` |
+        ``fail``.
         """
         now = time.monotonic()
 
         if self._is_charging == on:
             # Reality already matches intent — nothing to do.
-            return
+            return "skip:match"
 
         # Reality disagrees. Throttle re-asserts of the same desired value so
         # BLE latency / a stubborn car can't make us hammer the link.
@@ -509,12 +589,12 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "on" if on else "off",
                 now - self._last_switch_sent_at,
             )
-            return
+            return "skip:throttle"
 
         switch_entity = self.entry.data.get("charging_switch")
         if not switch_entity:
             _LOGGER.error("No charging_switch entity configured")
-            return
+            return "noentity"
 
         service = "turn_on" if on else "turn_off"
         _LOGGER.info(
@@ -539,9 +619,11 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._last_command_sent_at = now
             self._last_command_succeeded = True
             _LOGGER.info("Charging %s commanded", "start" if on else "stop")
+            return "on" if on else "off"
         except Exception as err:
             _LOGGER.error("Failed to %s charging: %s", service, err)
             self._last_command_succeeded = False
+            return "fail"
 
     def _compute_seconds_until_transition(self) -> int:
         """Compute seconds until next state transition."""
@@ -641,6 +723,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._sensor_unavailable_logged = False
         
         # ALWAYS update state machine - Charge Now and Off modes don't need sensors
+        state_before = self._controller_state
         self._update_state_machine(plugged_in, excess_w, production_w)
 
         # Compute target amps based on state
@@ -668,23 +751,27 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Hold current amps during stop timer
             target_amps = self._commanded_amps or 0
         
-        # Send commands based on state
+        # Send commands based on state. action_amps / action_switch capture
+        # what was actually done (or why not) for the per-cycle debug trace.
+        action_amps = "none"
+        action_switch = "none"
         if self._controller_state == ControllerState.FORCED:
             # Charge Now - always send commands
             _LOGGER.debug("Sending FORCED commands: amps=%d, switch=on", target_amps)
-            await self._send_amps(target_amps)
-            await self._send_switch(on=True)
+            action_amps = await self._send_amps(target_amps)
+            action_switch = await self._send_switch(on=True)
         elif self._controller_state == ControllerState.TRACKING:
             if target_amps > 0:
-                await self._send_amps(target_amps)
-                await self._send_switch(on=True)
+                action_amps = await self._send_amps(target_amps)
+                action_switch = await self._send_switch(on=True)
             else:
                 if plugged_in:
-                    await self._send_amps(0)
-                await self._send_switch(on=False)
+                    action_amps = await self._send_amps(0)
+                action_switch = await self._send_switch(on=False)
         elif self._controller_state == ControllerState.STOPPING:
             # Hold amps but don't change switch during stop timer
-            pass
+            action_amps = "hold"
+            action_switch = "hold"
         elif self._controller_state in (ControllerState.COOLDOWN, ControllerState.IDLE, ControllerState.DISABLED):
             # Belt-and-braces: while plugged in, zero out the proxy's amps
             # number so a stale value can't be drawn upon if anything
@@ -692,9 +779,27 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # starts charging while we're not in TRACKING. Debounce skips
             # the BLE call once _commanded_amps is already 0.
             if plugged_in:
-                await self._send_amps(0)
-            await self._send_switch(on=False)
-        
+                action_amps = await self._send_amps(0)
+            action_switch = await self._send_switch(on=False)
+
+        self._log_cycle(
+            state_before=state_before,
+            production_w=production_w,
+            production_raw_available=production_w_raw is not None,
+            consumption_w=consumption_w,
+            plugged_in=plugged_in,
+            excess_w=excess_w,
+            excess_w_pre_battery=excess_w_pre_battery,
+            target_amps=target_amps,
+            action_amps=action_amps,
+            action_switch=action_switch,
+            min_charging_w=min_amps * self.entry.data.get("voltage", DEFAULT_VOLTAGE),
+            battery_power_w=battery_power_w,
+            battery_soc_pct=battery_soc_pct,
+            battery_priority_active=battery_priority_active,
+            battery_deduction_w=battery_deduction_w,
+        )
+
         return self._build_data_dict(
             production_w=production_w,
             consumption_w=consumption_w,
@@ -741,3 +846,115 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "battery_soc_pct": battery_soc_pct,
             "battery_priority_active": battery_priority_active,
         }
+
+    def _log_cycle(
+        self,
+        *,
+        state_before: ControllerState,
+        production_w: float | None,
+        production_raw_available: bool,
+        consumption_w: float | None,
+        plugged_in: bool,
+        excess_w: float | None,
+        excess_w_pre_battery: float | None,
+        target_amps: int | None,
+        action_amps: str,
+        action_switch: str,
+        min_charging_w: float,
+        battery_power_w: float | None,
+        battery_soc_pct: float | None,
+        battery_priority_active: bool,
+        battery_deduction_w: float,
+    ) -> None:
+        """Emit one parseable per-cycle DEBUG trace line (``TSC_CYCLE``).
+
+        Single key=value line covering every input and decision of the cycle,
+        so a captured log can be analysed offline to see exactly where the
+        controller did (or didn't) respond. DEBUG-gated; silent at INFO+.
+        """
+        if not _LOGGER.isEnabledFor(logging.DEBUG):
+            return
+
+        now = time.monotonic()
+
+        iec_state = "NA"
+        iec_entity = self.entry.data.get("charging_state_sensor")
+        if iec_entity:
+            st = self.hass.states.get(iec_entity)
+            if st is not None:
+                iec_state = st.state
+
+        stop_delay = self._get_config_value(
+            "stop_delay_seconds", DEFAULT_STOP_DELAY_SECONDS
+        )
+        restart_delay = self._get_config_value(
+            "restart_delay_seconds", DEFAULT_RESTART_DELAY_SECONDS
+        )
+        stop_rem: Any = "NA"
+        if self._stop_timer_start is not None:
+            stop_rem = max(0, round(stop_delay - (now - self._stop_timer_start)))
+        cool_rem: Any = "NA"
+        if self._cooldown_timer_start is not None:
+            cool_rem = max(0, round(restart_delay - (now - self._cooldown_timer_start)))
+
+        voltage = self.entry.data.get("voltage", DEFAULT_VOLTAGE)
+        margin_w = self._get_config_value("margin_w", DEFAULT_MARGIN_W)
+        min_amps = int(self._get_config_value("min_amps", DEFAULT_MIN_AMPS))
+        max_amps = int(self._get_config_value("max_amps", DEFAULT_MAX_AMPS))
+        min_solar_w = self._get_config_value(
+            "min_solar_generation_w", DEFAULT_MIN_SOLAR_GENERATION_W
+        )
+        cons_excl = self.entry.data.get("consumption_excludes_charging", False)
+
+        def num(v: Any) -> str:
+            if v is None:
+                return "NA"
+            if isinstance(v, (int, float)):
+                return f"{v:.0f}"
+            return str(v)
+
+        sufficient = excess_w is not None and excess_w >= min_charging_w
+        state_str = (
+            state_before.value
+            if state_before == self._controller_state
+            else f"{state_before.value}->{self._controller_state.value}"
+        )
+
+        fields = [
+            f"mode={self._mode.value.replace(' ', '_')}",
+            f"state={state_str}",
+            f"prod_w={num(production_w)}",
+            f"prod_raw={'ok' if production_raw_available else 'unavail'}",
+            f"cons_w={num(consumption_w)}",
+            f"cons_excl_ev={str(cons_excl).lower()}",
+            f"iec={iec_state}",
+            f"plugged={str(plugged_in).lower()}",
+            f"charging_active={str(self._is_charging).lower()}",
+            f"margin_w={num(margin_w)}",
+            f"voltage={num(voltage)}",
+            f"min_a={min_amps}",
+            f"max_a={max_amps}",
+            f"min_chg_w={num(min_charging_w)}",
+            f"min_solar_w={num(min_solar_w)}",
+            f"excess_pre_w={num(excess_w_pre_battery)}",
+            f"excess_w={num(excess_w)}",
+            f"sufficient={str(sufficient).lower()}",
+            f"target_a={num(target_amps)}",
+            f"commanded_a={num(self._commanded_amps)}",
+            f"action_amps={action_amps}",
+            f"action_switch={action_switch}",
+            f"stop_rem_s={stop_rem}",
+            f"cool_rem_s={cool_rem}",
+            f"last_cmd_ok="
+            + ("NA" if self._last_command_succeeded is None
+               else str(self._last_command_succeeded).lower()),
+        ]
+        if battery_power_w is not None or battery_soc_pct is not None:
+            fields += [
+                f"batt_w={num(battery_power_w)}",
+                f"batt_soc={num(battery_soc_pct)}",
+                f"batt_prio={str(battery_priority_active).lower()}",
+                f"batt_deduct_w={num(battery_deduction_w)}",
+            ]
+
+        _LOGGER.debug("TSC_CYCLE %s", " ".join(fields))

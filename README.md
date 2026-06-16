@@ -186,6 +186,36 @@ The integration creates these entities:
 2. Check the **Diagnostics** sensor for current state
 3. Look at Home Assistant logs for any errors
 
+### Detailed debug logging
+
+For diagnosing responsiveness or unexpected grid-usage issues, enable DEBUG
+logging for the integration:
+
+```yaml
+logger:
+  logs:
+    custom_components.tesla_solar_charger: debug
+```
+
+This emits one parseable trace line per poll cycle, tagged `TSC_CYCLE`, plus a
+`TSC_TRANSITION` line whenever the controller changes state. Each cycle line
+captures the full decision — sensor reads, computed excess, the
+sufficient/insufficient verdict, target vs commanded amps, what was actually
+sent to the proxy (or why not), and the hysteresis timer remainders. Example:
+
+```
+TSC_CYCLE mode=Solar_Only state=tracking->stopping prod_w=820 cons_w=1180
+  cons_excl_ev=true iec=Charging plugged=true charging_active=true margin_w=0
+  voltage=230 min_a=5 max_a=32 min_chg_w=1150 min_solar_w=200 excess_pre_w=-360
+  excess_w=-360 sufficient=false target_a=0 commanded_a=5 action_amps=hold
+  action_switch=hold stop_rem_s=360 cool_rem_s=NA last_cmd_ok=true
+```
+
+Capture a window covering the problem (e.g. a partly cloudy afternoon) and the
+`TSC_CYCLE` / `TSC_TRANSITION` lines together show, cycle by cycle, exactly when
+and why charging did or didn't ramp. Leave it at the default (INFO) for normal
+operation — none of this appears unless DEBUG is enabled.
+
 ## Known Limitations
 
 This integration is intentionally limited in scope for the MVP:

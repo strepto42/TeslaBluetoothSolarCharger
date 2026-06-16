@@ -1951,3 +1951,93 @@ class TestSwitchReconciliationAgainstActualState:
             await coord._async_update_data()      # cycle 2 → throttled
 
         assert len(self._turn_off_calls(mock_hass)) == 1
+
+
+class TestDebugCycleLogging:
+    """A per-cycle DEBUG line (TSC_CYCLE) captures the full decision trace so a
+    user can hand logs back for analysis of responsiveness / grid-usage issues.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cycle_log_emitted_with_key_fields(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry, caplog
+    ):
+        import logging
+
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        coord._mode = Mode.SOLAR_ONLY
+        coord._master_enabled = True
+        coord._was_plugged_in = True
+
+        def get_state(entity_id: str):
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Charging", {})
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "4000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "1000", {"unit_of_measurement": "W"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+
+        caplog.set_level(
+            logging.DEBUG,
+            logger="custom_components.tesla_solar_charger.coordinator",
+        )
+
+        await coord._async_update_data()
+
+        cycle_lines = [
+            r.getMessage() for r in caplog.records if "TSC_CYCLE" in r.getMessage()
+        ]
+        assert cycle_lines, "expected a TSC_CYCLE debug line each cycle"
+        line = cycle_lines[-1]
+        for token in (
+            "mode=",
+            "state=",
+            "prod_w=",
+            "cons_w=",
+            "excess_w=",
+            "sufficient=",
+            "target_a=",
+            "commanded_a=",
+            "action_amps=",
+            "action_switch=",
+            "iec=",
+            "min_chg_w=",
+        ):
+            assert token in line, f"missing {token!r} in cycle line: {line}"
+
+    @pytest.mark.asyncio
+    async def test_no_cycle_log_above_debug_level(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry, caplog
+    ):
+        """At INFO and above, the per-cycle trace must not appear (no spam)."""
+        import logging
+
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        coord._mode = Mode.SOLAR_ONLY
+        coord._master_enabled = True
+        coord._was_plugged_in = True
+
+        def get_state(entity_id: str):
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Charging", {})
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "4000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "1000", {"unit_of_measurement": "W"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+
+        caplog.set_level(
+            logging.INFO,
+            logger="custom_components.tesla_solar_charger.coordinator",
+        )
+
+        await coord._async_update_data()
+
+        assert not [
+            r for r in caplog.records if "TSC_CYCLE" in r.getMessage()
+        ], "TSC_CYCLE must be DEBUG-gated"
