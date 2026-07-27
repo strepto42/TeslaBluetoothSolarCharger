@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import time as dt_time
 from datetime import timedelta
 from typing import Any
 
@@ -10,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 
 from .const import (
     BATTERY_GRADUATED_BUCKETS_A,
@@ -24,6 +26,9 @@ from .const import (
     DEFAULT_MIN_SOLAR_GENERATION_W,
     DEFAULT_RESTART_DELAY_SECONDS,
     DEFAULT_STOP_DELAY_SECONDS,
+    DEFAULT_TIME_WINDOW_ENABLED,
+    DEFAULT_TIME_WINDOW_END,
+    DEFAULT_TIME_WINDOW_START,
     DEFAULT_UPDATE_INTERVAL_SECONDS,
     DEFAULT_VOLTAGE,
     DOMAIN,
@@ -74,6 +79,10 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # so we can re-assert a dropped command without flooding the BLE link.
         self._last_switch_desired: bool | None = None
         self._last_switch_sent_at: float | None = None
+        # Tracks whether the previous cycle was inside the cheap-rate window,
+        # so leaving it can hand back to solar tracking without serving out
+        # the stop timer (which would charge on at peak rates).
+        self._was_in_time_window: bool = False
 
     # --- Properties ---
 
@@ -173,6 +182,64 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         return state.state == IEC_CHARGING_STATE
 
+    @staticmethod
+    def _parse_time(key: str, value: Any, fallback: str) -> dt_time | None:
+        """Parse an 'HH:MM[:SS]' option into a time.
+
+        An absent option falls back to the default, matching what the
+        corresponding TimeEntity displays before the user sets it. A value
+        that is present but unparseable returns None so the window fails
+        *closed* — silently substituting the default could charge at an hour
+        the user never asked for, at full rate and possibly peak rates.
+        """
+        if isinstance(value, dt_time):
+            return value
+        if value is None:
+            return dt_util.parse_time(fallback)
+        if isinstance(value, str):
+            parsed = dt_util.parse_time(value)
+            if parsed is not None:
+                return parsed
+        _LOGGER.warning(
+            "Ignoring unparseable %s=%r; time-window charging disabled until "
+            "it is set to a valid time",
+            key,
+            value,
+        )
+        return None
+
+    def _is_time_window_active(self) -> bool:
+        """Return True while the local clock is inside the cheap-rate window.
+
+        The window is start-inclusive and end-exclusive. A start later than
+        the end (e.g. 23:00 -> 07:00) wraps across midnight. A zero-length
+        window (start == end) is treated as inactive rather than as 24 hours,
+        so a misconfiguration fails safe.
+        """
+        if not self._get_config_value(
+            "time_window_enabled", DEFAULT_TIME_WINDOW_ENABLED
+        ):
+            return False
+
+        start = self._parse_time(
+            "time_window_start",
+            self._get_config_value("time_window_start", None),
+            DEFAULT_TIME_WINDOW_START,
+        )
+        end = self._parse_time(
+            "time_window_end",
+            self._get_config_value("time_window_end", None),
+            DEFAULT_TIME_WINDOW_END,
+        )
+        if start is None or end is None or start == end:
+            return False
+
+        now_t = dt_util.now().time()
+        if start < end:
+            return start <= now_t < end
+        # Wraps midnight: active from start to 23:59:59 and 00:00 to end.
+        return now_t >= start or now_t < end
+
     def _compute_excess_w_with_values(
         self, production_w: float, consumption_w: float | None
     ) -> float | None:
@@ -204,7 +271,16 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and self._commanded_amps is not None
             and self._is_charging
         ):
-            current_charge_w = voltage * self._commanded_amps
+            # `_commanded_amps` is what we asked for, which can exceed what the
+            # car is really drawing: a stale value from a previous session, a
+            # taper as the battery fills, or a power meter that hasn't caught up
+            # yet. Backing out more than the meter reads would manufacture
+            # excess from nothing and start charging with no surplus, so bound
+            # the reconstruction by the measured consumption. When the meter
+            # includes the EV, the EV cannot exceed the whole-house figure.
+            current_charge_w = max(
+                0.0, min(voltage * self._commanded_amps, consumption_w)
+            )
         
         # Compute excess
         if consumption_excludes_charging:
@@ -337,13 +413,19 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         plugged_in: bool,
         excess_w: float | None,
         production_w: float,
+        time_window_active: bool = False,
     ) -> None:
         """Update controller state machine.
 
         Handles transitions between DISABLED, IDLE, TRACKING, STOPPING,
-        COOLDOWN, and FORCED states based on current conditions.
+        COOLDOWN, FORCED and TIME_WINDOW states based on current conditions.
         """
         now = time.monotonic()
+
+        # Latch the window edge up front so every early return leaves the
+        # flag consistent; the local copy drives the exit handling below.
+        was_in_time_window = self._was_in_time_window
+        self._was_in_time_window = time_window_active
 
         # Check for plug state changes (resets timers)
         if plugged_in != self._was_plugged_in:
@@ -384,6 +466,38 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # IDLE: Not plugged in
         if not plugged_in:
             self._transition(ControllerState.IDLE, "not_plugged_in")
+            self._stop_timer_start = None
+            self._cooldown_timer_start = None
+            return
+
+        # TIME_WINDOW: cheap-rate clock window overrides solar tracking and
+        # bypasses the hysteresis timers — a stop/restart lockout must not
+        # eat into a limited off-peak period.
+        if time_window_active:
+            self._transition(ControllerState.TIME_WINDOW, "time_window_open")
+            self._stop_timer_start = None
+            self._cooldown_timer_start = None
+            return
+
+        # Leaving the window hands straight back to solar tracking. We do NOT
+        # serve out the stop timer here: it exists to ride out cloud dips, and
+        # there is no dip to ride out coming off cheap-rate power — waiting
+        # would just charge on at peak rates.
+        if was_in_time_window:
+            if excess_w is not None and excess_w >= min_charging_w:
+                self._transition(
+                    ControllerState.TRACKING,
+                    "time_window_closed_excess_sufficient",
+                    excess_w=excess_w,
+                    min_chg_w=min_charging_w,
+                )
+            else:
+                self._transition(
+                    ControllerState.IDLE,
+                    "time_window_closed_stop_immediately",
+                    excess_w=excess_w,
+                    min_chg_w=min_charging_w,
+                )
             self._stop_timer_start = None
             self._cooldown_timer_start = None
             return
@@ -722,9 +836,14 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         else:
             self._sensor_unavailable_logged = False
         
+        # Cheap-rate clock window (independent of all sensor readings)
+        time_window_active = self._is_time_window_active()
+
         # ALWAYS update state machine - Charge Now and Off modes don't need sensors
         state_before = self._controller_state
-        self._update_state_machine(plugged_in, excess_w, production_w)
+        self._update_state_machine(
+            plugged_in, excess_w, production_w, time_window_active
+        )
 
         # Compute target amps based on state
         target_amps = 0
@@ -735,6 +854,10 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Charge Now - always charge at max, regardless of sensors
             target_amps = max_amps
             _LOGGER.debug("FORCED mode: target_amps=%d", target_amps)
+        elif self._controller_state == ControllerState.TIME_WINDOW:
+            # Cheap-rate window - charge at max, ignoring solar entirely
+            target_amps = max_amps
+            _LOGGER.debug("TIME_WINDOW: target_amps=%d", target_amps)
         elif self._controller_state == ControllerState.TRACKING:
             if sensors_available and excess_w is not None:
                 if self._mode == Mode.SOLAR_PLUS_GRID:
@@ -755,9 +878,16 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # what was actually done (or why not) for the per-cycle debug trace.
         action_amps = "none"
         action_switch = "none"
-        if self._controller_state == ControllerState.FORCED:
-            # Charge Now - always send commands
-            _LOGGER.debug("Sending FORCED commands: amps=%d, switch=on", target_amps)
+        if self._controller_state in (
+            ControllerState.FORCED,
+            ControllerState.TIME_WINDOW,
+        ):
+            # Charge Now / cheap-rate window - always drive amps + switch on
+            _LOGGER.debug(
+                "Sending %s commands: amps=%d, switch=on",
+                self._controller_state.value,
+                target_amps,
+            )
             action_amps = await self._send_amps(target_amps)
             action_switch = await self._send_switch(on=True)
         elif self._controller_state == ControllerState.TRACKING:
@@ -794,6 +924,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             action_amps=action_amps,
             action_switch=action_switch,
             min_charging_w=min_amps * self.entry.data.get("voltage", DEFAULT_VOLTAGE),
+            time_window_active=time_window_active,
             battery_power_w=battery_power_w,
             battery_soc_pct=battery_soc_pct,
             battery_priority_active=battery_priority_active,
@@ -808,6 +939,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             battery_deduction_w=battery_deduction_w,
             plugged_in=plugged_in,
             target_amps=target_amps,
+            time_window_active=time_window_active,
             battery_power_w=battery_power_w,
             battery_soc_pct=battery_soc_pct,
             battery_priority_active=battery_priority_active,
@@ -822,6 +954,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         battery_deduction_w: float,
         plugged_in: bool,
         target_amps: int | None,
+        time_window_active: bool,
         battery_power_w: float | None,
         battery_soc_pct: float | None,
         battery_priority_active: bool,
@@ -842,6 +975,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "seconds_until_next_transition": self._compute_seconds_until_transition(),
             "last_command_sent_at": self._last_command_sent_at,
             "last_command_succeeded": self._last_command_succeeded,
+            "time_window_active": time_window_active,
             "battery_power_w": battery_power_w,
             "battery_soc_pct": battery_soc_pct,
             "battery_priority_active": battery_priority_active,
@@ -861,6 +995,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         action_amps: str,
         action_switch: str,
         min_charging_w: float,
+        time_window_active: bool,
         battery_power_w: float | None,
         battery_soc_pct: float | None,
         battery_priority_active: bool,
@@ -945,6 +1080,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             f"action_switch={action_switch}",
             f"stop_rem_s={stop_rem}",
             f"cool_rem_s={cool_rem}",
+            f"tw_active={str(time_window_active).lower()}",
             f"last_cmd_ok="
             + ("NA" if self._last_command_succeeded is None
                else str(self._last_command_succeeded).lower()),

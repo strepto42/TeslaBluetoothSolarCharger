@@ -4,7 +4,7 @@ from enum import StrEnum
 DOMAIN = "tesla_solar_charger"
 
 # Platforms
-PLATFORMS = ["select", "number", "switch", "sensor", "binary_sensor"]
+PLATFORMS = ["select", "number", "switch", "sensor", "binary_sensor", "time"]
 
 # Default values
 DEFAULT_NAME = "Tesla Solar Charger"
@@ -16,6 +16,14 @@ DEFAULT_MARGIN_W = 0
 DEFAULT_MIN_SOLAR_GENERATION_W = 200
 DEFAULT_STOP_DELAY_SECONDS = 360  # 6 minutes
 DEFAULT_RESTART_DELAY_SECONDS = 900  # 15 minutes
+
+# Time-window (cheap-rate) charging. An override for users on off-peak or
+# free-power tariffs: while the local clock is inside the window, charge at
+# max amps regardless of solar. Disabled by default — the window only takes
+# effect once the user explicitly enables it.
+DEFAULT_TIME_WINDOW_ENABLED = False
+DEFAULT_TIME_WINDOW_START = "23:00:00"
+DEFAULT_TIME_WINDOW_END = "07:00:00"
 
 # Voltage limits
 VOLTAGE_MIN = 100
@@ -91,6 +99,7 @@ class ControllerState(StrEnum):
     STOPPING = "stopping"  # Excess fell below threshold, running 6-min timer
     COOLDOWN = "cooldown"  # Charging stopped, running 15-min restart lockout
     FORCED = "forced"  # Charge Now mode active
+    TIME_WINDOW = "time_window"  # Inside the cheap-rate clock window
 
 
 # IEC 61851 states that indicate plugged in (from ESPHome Tesla BLE proxy)

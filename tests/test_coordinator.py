@@ -297,10 +297,17 @@ class TestComputeExcessWWithValues:
     def test_production_zero_treated_normally(
         self, coordinator: TeslaSolarChargerCoordinator
     ):
-        """Production of 0 is a valid value, computes negative excess."""
-        result = coordinator._compute_excess_w_with_values(0.0, 1000.0)
-        # 0 - (1000 - 2300) - 0 = 1300 (consumption includes EV draw)
-        assert result == 1300.0
+        """Production of 0 is a valid value, computes negative excess.
+
+        Consumption must include the EV draw to be physically consistent:
+        500 W house + 2300 W charging at 10 A = 2800 W. With no production the
+        real surplus is -500 W. (This previously asserted +1300 W from a 1000 W
+        reading, which implied the EV drawing more than the whole-house meter
+        reads — the phantom-excess case the back-out clamp now prevents.)
+        """
+        result = coordinator._compute_excess_w_with_values(0.0, 2800.0)
+        # 0 - (2800 - 2300) - 0 = -500
+        assert result == -500.0
 
 
 class TestTargetAmpsCalculation:

@@ -124,6 +124,17 @@
     "switch": {
       "master_enable": {
         "name": "Master Enable"
+      },
+      "time_window_enabled": {
+        "name": "Time Window Charging"
+      }
+    },
+    "time": {
+      "time_window_start": {
+        "name": "Charge Window Start"
+      },
+      "time_window_end": {
+        "name": "Charge Window End"
       }
     },
     "sensor": {
@@ -176,6 +187,9 @@
       },
       "battery_priority_active": {
         "name": "Battery Priority Active"
+      },
+      "time_window_active": {
+        "name": "Time Window Active"
       }
     }
   }

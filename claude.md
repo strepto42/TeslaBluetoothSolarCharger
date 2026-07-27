@@ -93,9 +93,13 @@ These rules govern *how* work is done in this repo. They override default behavi
 
 - **Do not invent features.** If a requirement is not in this file or in the
   build prompt, ask before adding it. The user has explicitly excluded
-  scheduled charging, multi-vehicle support, and three-phase charging
-  from the MVP. Do not silently add them. Home battery awareness *is*
-  in scope — see "Battery awareness" below.
+  multi-vehicle support and three-phase charging from the MVP. Do not
+  silently add them. Home battery awareness *is* in scope — see "Battery
+  awareness" below. **Time-window (cheap-rate) charging is also in scope**
+  — see "Time-window charging" below. Note this is a deliberate reversal:
+  scheduled charging was originally excluded. Anything beyond the single
+  daily start/end window (day-of-week rules, multiple windows, solar
+  forecast integration) remains out of scope — ask first.
 - **Do not hardcode entity IDs.** All upstream entity IDs (the ESPHome BLE
   proxy's amps number, charging switch, charging state sensor, the user's
   production and consumption sensors) are configured by the user via the
@@ -159,6 +163,20 @@ These rules govern *how* work is done in this repo. They override default behavi
     sensor does not see the EV charging draw (most installs *do* see it). When
     enabled, do **not** add the current charge draw back when computing excess.
 
+- **Time-window charging** (not a ChargeHQ mirror — a local requirement for
+  users on off-peak/free-power tariffs): while the local clock is inside a
+  configured window, charge at `max_amps` regardless of solar. It is an
+  **override layered on top of the selected mode**, not a mode of its own, so
+  no manual switching is needed at the window boundaries. Precedence, highest
+  first: `DISABLED` (mode Off or master enable off — both suppress the window)
+  → `FORCED` (Charge Now wins) → `IDLE` if unplugged → `TIME_WINDOW` → normal
+  solar tracking. The window bypasses the 6/15-minute hysteresis timers, since
+  a lockout must not eat into a limited cheap-rate period, and battery priority
+  does not gate it (cheap grid power is not solar). **Leaving** the window does
+  *not* serve out the stop timer: that timer exists to ride out cloud dips, and
+  waiting would simply charge on at peak rates — so the controller re-evaluates
+  excess immediately and either hands over to `TRACKING` or stops.
+
 ## Definitions
 
 - `production_w` — instantaneous solar generation in watts, from a configured
@@ -166,9 +184,14 @@ These rules govern *how* work is done in this repo. They override default behavi
   internally the integration always works in watts.
 - `consumption_w` — instantaneous house consumption in watts, summed across
   one or more configured sensors.
-- `current_charge_w` — `voltage × current_amps`. `current_amps` is the
+- `current_charge_w` — `voltage × current_amps`, where `current_amps` is the
   *commanded* amps (the value the integration last successfully wrote to the
-  ESPHome amps number).
+  ESPHome amps number). Only non-zero while the car is actually charging
+  (`_is_charging`, derived from the IEC sensor), and **clamped to
+  `[0, consumption_w]`**: the commanded value can exceed what the car really
+  draws (stale value from a previous session, taper as the battery fills, a
+  lagging power meter), and backing out more than the meter reads would
+  manufacture excess from nothing and start charging with no surplus.
 - `excess_w` — available power for EV charging:
   - If consumption sensor *includes* EV charging (default):
     `excess_w = production_w − (consumption_w − current_charge_w) − margin_w`
@@ -206,6 +229,9 @@ States the coordinator tracks internally:
 - `STOPPING` — excess fell below threshold; running 6-minute stop timer.
 - `COOLDOWN` — charging stopped; running 15-minute restart lockout.
 - `FORCED` — Charge Now mode active.
+- `TIME_WINDOW` — inside the cheap-rate clock window; charging at max amps
+  regardless of solar. Distinct from `FORCED` so the state sensor and the
+  `TSC_CYCLE` trace show *why* the car is charging.
 
 Transitions are driven by the coordinator on every poll cycle (default 5 s,
 configurable via the **Update Interval** NumberEntity on the device's
@@ -219,7 +245,7 @@ mode change or plug events.
 1. Read `production_w` and `consumption_w` from configured sensor entity IDs via `hass.states.get`. Production unavailable → treat as 0 W. Consumption unavailable → solar tracking disabled (Charge Now / Off still work).
 2. Compute `excess_w` using `_compute_excess_w_with_values`. The formula accounts for whether the consumption sensor already includes the EV draw, and gates the EV-draw back-out on `_is_charging` — which is refreshed each cycle from the IEC `charging_state_sensor` (`_read_charging_active`), i.e. whether the car is *actually* drawing — so a stale `_commanded_amps` doesn't inflate household-load when the car isn't charging. Switch commands reconcile against this same observed state rather than trusting that the last BLE command landed (see step 6).
 3. If a battery power+SoC sensor pair is configured and both are readable, apply `_apply_battery_priority(excess_w, soc_pct)` before the state machine sees `excess_w`. Below the limit → 0; at/above the limit → unchanged (hard cutoff) or bucketed deduction (graduated). Sensors unavailable → fall back to no-battery formula.
-4. Advance the state machine (`_update_state_machine`): `DISABLED → IDLE → TRACKING → STOPPING → COOLDOWN → FORCED`. Hysteresis timers use `time.monotonic()` stored in `_stop_timer_start` / `_cooldown_timer_start`; they reset on plug events and mode changes.
+4. Evaluate `_is_time_window_active()` (pure clock check, independent of every sensor) and advance the state machine (`_update_state_machine`): `DISABLED → IDLE → TIME_WINDOW → TRACKING → STOPPING → COOLDOWN → FORCED`. Hysteresis timers use `time.monotonic()` stored in `_stop_timer_start` / `_cooldown_timer_start`; they reset on plug events and mode changes.
 5. Compute `target_amps = floor(excess_w / voltage)`, clamped to `[min_amps, max_amps]`.
 6. Issue `number.set_value` / `switch.turn_on` / `switch.turn_off` service calls via `hass.services.async_call`. Amps are debounced against the last commanded value. The **switch is reconciled against the car's observed IEC state**, not our memory of the last command: while the car's reported charging state already matches intent we send nothing (flood protection); while it disagrees — e.g. a `turn_off` was dropped over the unreliable BLE link and the car is still `Charging` — we re-assert the command, throttled to no more than once per `SWITCH_RESEND_INTERVAL_SECONDS` for the same desired value (a genuine change sends immediately). This is what makes a dropped stop self-heal instead of stranding the car charging.
 6. Return a `dict[str, Any]` snapshot; all platform entities (`select.py`, `number.py`, `switch.py`, `sensor.py`) read from this dict and never call services directly.
@@ -234,6 +260,8 @@ verbatim on save (`OPTIONS_FIELDS` is empty by design).
 Every runtime tunable lives on a dashboard control that writes directly
 to `entry.options`:
 
+- `switch.py` — Master Enable, Time Window Charging (persisted to options).
+- `time.py` — Charge Window Start / End (`TimeEntity`, persisted to options).
 - `number.py` — Min Amps, Max Amps, Margin (W), Update Interval (s),
   Minimum Solar Generation (W), Stop Delay (s), Restart Cooldown (s),
   Battery Priority Charge Limit (%; only when battery configured).
@@ -260,7 +288,9 @@ custom_components/tesla_solar_charger/
 ├── number.py               # min amps, max amps, margin (dashboard tunables)
 ├── switch.py               # master enable
 ├── sensor.py               # numeric/string diagnostic sensors
-├── binary_sensor.py        # plugged_in, is_charging, last_command_succeeded
+├── binary_sensor.py        # plugged_in, is_charging, last_command_succeeded,
+│                           # battery_priority_active, time_window_active
+├── time.py                 # charge window start / end (cheap-rate charging)
 ├── strings.json            # config flow text + translation keys
 └── translations/
     └── en.json

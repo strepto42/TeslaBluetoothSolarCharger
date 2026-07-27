@@ -28,6 +28,7 @@ async def async_setup_entry(
         TeslaSolarChargerPluggedInBinarySensor(coordinator, entry),
         TeslaSolarChargerIsChargingBinarySensor(coordinator, entry),
         TeslaSolarChargerLastCommandBinarySensor(coordinator, entry),
+        TeslaSolarChargerTimeWindowBinarySensor(coordinator, entry),
     ]
     if entry.data.get("battery_power_sensor") and entry.data.get("battery_soc_sensor"):
         entities.append(
@@ -118,6 +119,24 @@ class TeslaSolarChargerLastCommandBinarySensor(_TeslaSolarChargerBaseBinarySenso
     @property
     def is_on(self) -> bool | None:
         return self.coordinator.data.get("last_command_succeeded")
+
+
+class TeslaSolarChargerTimeWindowBinarySensor(_TeslaSolarChargerBaseBinarySensor):
+    """Binary sensor: the cheap-rate time window is currently active."""
+
+    _attr_translation_key = "time_window_active"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry, "time_window_active")
+
+    @property
+    def is_on(self) -> bool:
+        return bool(self.coordinator.data.get("time_window_active", False))
 
 
 class TeslaSolarChargerBatteryPriorityBinarySensor(_TeslaSolarChargerBaseBinarySensor):

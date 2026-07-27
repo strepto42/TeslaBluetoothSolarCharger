@@ -92,6 +92,32 @@ Charging power tracks available excess solar, but if excess drops below the mini
 ### Charge Now
 Immediately starts charging at maximum configured amperage, ignoring all solar calculations. This mode bypasses all timers and restrictions. Use this when you need to charge regardless of solar availability.
 
+## Time Window Charging (cheap-rate tariffs)
+
+If you have free or cheap electricity between set hours, the integration can charge at maximum amperage during that window regardless of solar.
+
+This is an **override layered on top of whichever mode is selected** — not a mode of its own — so you don't have to switch modes at the window boundaries. Leave the Mode select on `Solar Only` and it will track solar all day, then charge at full rate through the window automatically.
+
+Controls (on the device page, under Configuration):
+
+| Control | Default | Description |
+|---|---|---|
+| Time Window Charging | Off | Master toggle for the feature. Persists across restarts. |
+| Charge Window Start | 23:00 | Local time the window opens (inclusive). |
+| Charge Window End | 07:00 | Local time the window closes (exclusive). |
+
+Windows that span midnight work as expected — `23:00` → `07:00` is active all night.
+
+Behaviour details:
+
+- **Rate** — charges at your configured **Maximum Amps**.
+- **Precedence** — `Mode: Off` and turning **Master Enable** off both suppress the window (they're "hands off the car" switches). `Charge Now` takes priority over it. If the car isn't plugged in, nothing happens.
+- **No waiting at the start** — the 15-minute restart cooldown is bypassed, so a lockout can't eat into a limited cheap-rate period.
+- **Battery priority doesn't apply** — home-battery priority is about allocating *solar*; cheap grid power isn't gated by it.
+- **Clean handover at the end** — when the window closes, control returns to solar tracking immediately. If there's enough sun, charging continues seamlessly; if not, it stops straight away rather than serving out the 6-minute stop timer (which would mean paying peak rates for those minutes).
+
+A **Time Window Active** binary sensor and a `TIME_WINDOW` value on the Controller State sensor show when it's driving.
+
 ## How Excess Solar is Calculated
 
 The integration uses this formula:
@@ -131,6 +157,8 @@ The integration creates these entities:
 ### Controls
 - **Mode** (select): Off / Solar Only / Solar + Grid / Charge Now
 - **Master Enable** (switch): Global enable/disable
+- **Time Window Charging** (switch): Enable cheap-rate window charging
+- **Charge Window Start** / **Charge Window End** (time): The cheap-rate window
 - **Minimum Amps**, **Maximum Amps**, **Margin** (number)
 - **Update Interval**, **Minimum Solar Generation**, **Stop Delay**, **Restart Cooldown** (number)
 - **Battery Priority Charge Limit** (number, only if battery configured)
@@ -150,6 +178,7 @@ The integration creates these entities:
 - **Home Battery Power** (only if battery configured, diagnostic): Normalised positive=charging
 - **Home Battery State of Charge** (only if battery configured, diagnostic): Battery SoC %
 - **Battery Priority Active** (binary, only if battery configured, diagnostic): True when battery priority gated this cycle
+- **Time Window Active** (binary, diagnostic): True while inside the cheap-rate window
 - **Excess Solar (Pre-Battery)** (only if battery configured, diagnostic): Excess before battery gating — what tracking would do without battery awareness
 - **Battery Priority Deduction** (only if battery configured, diagnostic): Watts the gating subtracted this cycle. Useful in graduated mode to see the active SoC band.
 
@@ -222,7 +251,7 @@ This integration is intentionally limited in scope for the MVP:
 
 - **Single vehicle only** - Multi-vehicle support is not implemented
 - **Single-phase only** - Three-phase charging calculations are not supported
-- **No scheduled charging** - No time-based charging schedules
+- **Single time window only** - One daily start/end window; no day-of-week rules, multiple windows, or solar-forecast scheduling
 - **No Tesla cloud** - Requires local ESPHome BLE proxy; does not use Tesla's API
 
 These may be added in future versions based on user feedback.

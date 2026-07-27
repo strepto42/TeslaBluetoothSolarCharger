@@ -43,7 +43,8 @@ class TestPlatforms:
         assert "switch" in PLATFORMS
         assert "sensor" in PLATFORMS
         assert "binary_sensor" in PLATFORMS
-        assert len(PLATFORMS) == 5
+        assert "time" in PLATFORMS
+        assert len(PLATFORMS) == 6
 
 
 class TestDefaults:
@@ -127,9 +128,14 @@ class TestControllerStateEnum:
         assert ControllerState.COOLDOWN == "cooldown"
         assert ControllerState.FORCED == "forced"
 
+    def test_time_window_state_exists(self):
+        """Time-window charging has its own state, distinct from FORCED."""
+        assert ControllerState.TIME_WINDOW == "time_window"
+        assert ControllerState.TIME_WINDOW != ControllerState.FORCED
+
     def test_state_count(self):
-        """Test exactly 6 states exist."""
-        assert len(ControllerState) == 6
+        """Test exactly 7 states exist."""
+        assert len(ControllerState) == 7
 
 
 class TestIECStates:
