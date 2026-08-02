@@ -6,3 +6,7 @@ __pycache__/
 *.pyc
 
 .claude/settings.local.json
+
+# High-res brand icon source — kept locally, not shipped in the repo.
+# Shipped brand images live in custom_components/tesla_solar_charger/brand/.
+/icon@4x.png
