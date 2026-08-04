@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration that automatically adjusts your Tesla's charging rate based on excess solar production, using an ESPHome Tesla BLE proxy for vehicle communication.
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+[![hacs_badge](https://img.shields.io/badge/HACS-Default-blue.svg)](https://github.com/hacs/integration)
 
 ## What It Does
 
@@ -27,14 +27,27 @@ Before installing this integration, you need:
 
 ### Via HACS (Recommended)
 
+This integration is in the HACS default catalog, so no custom repository is needed.
+
 1. Open HACS in Home Assistant
-2. Click the three dots menu in the top right
-3. Select "Custom repositories"
-4. Add this repository URL: `https://github.com/strepto42/TeslaBluetoothSolarCharger`
-5. Select category: "Integration"
-6. Click "Add"
-7. Find "Tesla Solar Charger" in HACS and install it
-8. Restart Home Assistant
+2. Search for "Tesla Solar Charger"
+3. Click it, then click **Download**
+4. Restart Home Assistant
+
+<details>
+<summary>Not showing up in HACS?</summary>
+
+Newly added integrations can take a little while to appear, and older HACS
+versions may not have picked it up yet. Add it as a custom repository instead:
+
+1. Open HACS, click the three dots menu in the top right
+2. Select "Custom repositories"
+3. Add the repository URL: `https://github.com/strepto42/TeslaBluetoothSolarCharger`
+4. Select category: "Integration", then click "Add"
+5. Find "Tesla Solar Charger" in HACS and download it
+6. Restart Home Assistant
+
+</details>
 
 ### Manual Installation
 
